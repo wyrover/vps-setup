@@ -46,26 +46,13 @@ run_subscript() {
     echo ""
     print_info "正在加载模块: ${script_name}..."
     
-    # 执行子脚本
-    set +e  # 临时关闭错误即退出
-    curl -fsSL "$script_url" | bash
-    local exit_code=$?
-    set -e  # 恢复错误即退出
+    # 直接执行，不捕获退出码
+    bash <(curl -fsSL "$script_url")
     
-    # 退出码 0 表示正常完成
-    # 退出码 1 可能是用户选择返回，也视为正常
-    if [[ $exit_code -eq 0 ]]; then
-        return 0
-    elif [[ $exit_code -eq 1 ]]; then
-        # 退出码 1 也接受（可能是用户正常返回）
-        return 0
-    else
-        # 其他退出码才报错
-        print_error "模块执行异常（退出码: $exit_code）"
-        print_warning "这可能是网络问题或脚本错误"
-        read -p "按 Enter 键返回主菜单..."
-        return 1
-    fi
+    # 或者简单捕获但不处理
+    # bash <(curl -fsSL "$script_url") || true
+    
+    return 0
 }
 
 # 测试连接
