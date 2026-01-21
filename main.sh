@@ -14,7 +14,7 @@ GITHUB_BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # 版本信息
-VERSION="1.2.1"
+VERSION="1.2.2"
 LAST_UPDATE="2026-01-21"
 
 
@@ -78,23 +78,126 @@ run_subscript() {
 }
 
 
-# 运行 YABS 性能测试
-run_yabs_benchmark() {
+# YABS 性能测试子菜单
+yabs_benchmark_menu() {
+    while true; do
+        clear
+        echo "=========================================="
+        echo "   🚀 YABS 性能测试"
+        echo "=========================================="
+        echo ""
+        print_info "YABS (Yet Another Bench Script) 性能测试工具"
+        echo ""
+        
+        echo -e "${CYAN}[完整测试]${NC}"
+        echo "1. 完整测试 (全部项目)"
+        echo "2. 完整测试 + Geekbench 4"
+        echo "3. 完整测试 + Geekbench 5"
+        echo "4. 完整测试 + GB4 + GB5"
+        echo ""
+        
+        echo -e "${CYAN}[跳过特定测试]${NC}"
+        echo "5. 跳过磁盘测试 (-f)"
+        echo "6. 跳过网络测试 (-i)"
+        echo "7. 跳过 Geekbench (-g)"
+        echo "8. 仅网络测试 (-fd)"
+        echo "9. 仅磁盘测试 (-ig)"
+        echo ""
+        
+        echo -e "${CYAN}[减少网络测试]${NC}"
+        echo "10. 减少网络节点 (-r)"
+        echo "11. 完整测试 + 减少节点"
+        echo ""
+        
+        echo -e "${CYAN}[输出选项]${NC}"
+        echo "12. 输出 JSON 格式 (-j)"
+        echo "13. 保存 JSON 到文件 (-w)"
+        echo ""
+        
+        echo -e "${YELLOW}[说明]${NC}"
+        echo "h. 查看详细说明"
+        echo ""
+        
+        echo "0. 返回上级菜单"
+        echo ""
+        echo "=========================================="
+        read -p "请选择 [0-13/h]: " choice
+        
+        case $choice in
+            1)
+                run_yabs_test ""
+                ;;
+            2)
+                run_yabs_test "-4"
+                ;;
+            3)
+                run_yabs_test "-5"
+                ;;
+            4)
+                run_yabs_test "-9"
+                ;;
+            5)
+                run_yabs_test "-f"
+                ;;
+            6)
+                run_yabs_test "-i"
+                ;;
+            7)
+                run_yabs_test "-g"
+                ;;
+            8)
+                run_yabs_test "-fg"
+                ;;
+            9)
+                run_yabs_test "-ig"
+                ;;
+            10)
+                run_yabs_test "-r"
+                ;;
+            11)
+                run_yabs_test "-r"
+                ;;
+            12)
+                run_yabs_test "-j"
+                ;;
+            13)
+                run_yabs_test_with_file
+                ;;
+            h|H)
+                show_yabs_help
+                ;;
+            0)
+                return
+                ;;
+            *)
+                print_error "无效选择"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+
+# 执行 YABS 测试
+run_yabs_test() {
+    local flags=$1
+    local test_name="YABS 性能测试"
+    
     clear
     echo "=========================================="
-    echo "   🚀 YABS 性能测试"
+    echo "   ${test_name}"
     echo "=========================================="
     echo ""
     
-    print_info "YABS (Yet Another Bench Script) 性能测试工具"
-    echo ""
-    print_warning "此测试将："
-    echo "  1. 测试 CPU 性能"
-    echo "  2. 测试内存读写速度"
-    echo "  3. 测试磁盘 I/O 性能"
-    echo "  4. 测试网络速度（多个节点）"
-    echo ""
-    print_info "测试可能需要 5-10 分钟，请耐心等待..."
+    if [ -n "$flags" ]; then
+        print_info "测试参数: $flags"
+        echo ""
+    fi
+    
+    print_warning "注意事项："
+    echo "  • 测试时间: 5-15 分钟（取决于配置）"
+    echo "  • 网络测试会占用大量带宽"
+    echo "  • Geekbench 测试需要下载约 300MB"
     echo ""
     
     read -p "是否开始测试？(y/n): " confirm
@@ -106,16 +209,148 @@ run_yabs_benchmark() {
     fi
     
     echo ""
-    print_info "正在启动 YABS 测试..."
+    print_info "正在启动测试..."
+    echo ""
+    echo "=========================================="
     echo ""
     
     # 执行 YABS 测试
-    curl -sL https://yabs.sh | bash
+    if [ -n "$flags" ]; then
+        curl -sL https://yabs.sh | bash -s -- $flags
+    else
+        curl -sL https://yabs.sh | bash
+    fi
     
     echo ""
     echo "=========================================="
     print_success "测试完成"
     echo "=========================================="
+    echo ""
+    
+    read -p "按 Enter 键继续..."
+}
+
+
+# 执行 YABS 测试并保存到文件
+run_yabs_test_with_file() {
+    clear
+    echo "=========================================="
+    echo "   保存 YABS 结果到文件"
+    echo "=========================================="
+    echo ""
+    
+    local default_file="yabs_result_$(date +%Y%m%d_%H%M%S).json"
+    
+    read -p "输入文件名 (默认: $default_file): " filename
+    filename=${filename:-$default_file}
+    
+    # 确保文件名以 .json 结尾
+    if [[ ! "$filename" =~ \.json$ ]]; then
+        filename="${filename}.json"
+    fi
+    
+    echo ""
+    print_info "结果将保存到: $filename"
+    echo ""
+    
+    read -p "是否开始测试？(y/n): " confirm
+    
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        print_info "已取消测试"
+        read -p "按 Enter 键继续..."
+        return
+    fi
+    
+    echo ""
+    print_info "正在启动测试..."
+    echo ""
+    echo "=========================================="
+    echo ""
+    
+    # 执行 YABS 测试并保存
+    curl -sL https://yabs.sh | bash -s -- -w "$filename"
+    
+    echo ""
+    echo "=========================================="
+    print_success "测试完成"
+    echo ""
+    
+    if [ -f "$filename" ]; then
+        print_success "结果已保存到: $filename"
+        echo "文件大小: $(du -h $filename | awk '{print $1}')"
+    else
+        print_error "文件保存失败"
+    fi
+    
+    echo "=========================================="
+    echo ""
+    
+    read -p "按 Enter 键继续..."
+}
+
+
+# 显示 YABS 帮助信息
+show_yabs_help() {
+    clear
+    echo "=========================================="
+    echo "   YABS 测试说明"
+    echo "=========================================="
+    echo ""
+    
+    echo -e "${CYAN}测试项目：${NC}"
+    echo ""
+    echo "1. 磁盘性能测试 (fio)"
+    echo "   • 4K、64K、512K、1M 块大小"
+    echo "   • 随机读写混合测试 (50/50)"
+    echo "   • 评估磁盘 IOPS 和吞吐量"
+    echo ""
+    
+    echo "2. 网络性能测试 (iperf3)"
+    echo "   • 多个全球节点测试"
+    echo "   • 8 个并行线程"
+    echo "   • 测试上传和下载速度"
+    echo "   • 支持 IPv4 和 IPv6"
+    echo ""
+    
+    echo "3. 系统性能测试 (Geekbench)"
+    echo "   • 默认: Geekbench 6"
+    echo "   • 可选: Geekbench 4 或 5"
+    echo "   • 单核和多核性能评分"
+    echo "   • 提供在线结果链接"
+    echo ""
+    
+    echo -e "${CYAN}常用参数：${NC}"
+    echo ""
+    echo "  -f/-d  跳过磁盘测试"
+    echo "  -i     跳过网络测试"
+    echo "  -g     跳过 Geekbench 测试"
+    echo "  -n     跳过网络信息查询"
+    echo "  -r     减少网络测试节点（节省带宽）"
+    echo "  -4     运行 Geekbench 4 (替代 GB6)"
+    echo "  -5     运行 Geekbench 5 (替代 GB6)"
+    echo "  -9     同时运行 GB4 和 GB5 (替代 GB6)"
+    echo "  -j     输出 JSON 格式"
+    echo "  -w     保存 JSON 结果到文件"
+    echo ""
+    
+    echo -e "${CYAN}组合使用：${NC}"
+    echo ""
+    echo "  -fg    仅测试网络性能"
+    echo "  -ig    仅测试磁盘性能"
+    echo "  -fgi   仅显示系统信息"
+    echo ""
+    
+    echo -e "${YELLOW}注意事项：${NC}"
+    echo ""
+    echo "  • 完整测试需要 5-15 分钟"
+    echo "  • 网络测试会产生大量流量 (~10GB)"
+    echo "  • 低带宽服务器建议使用 -r 或 -i"
+    echo "  • Geekbench 需要下载 ~300MB"
+    echo "  • 测试期间可能影响服务器性能"
+    echo ""
+    
+    echo -e "${CYAN}官方文档：${NC}"
+    echo "  https://github.com/masonr/yet-another-bench-script"
     echo ""
     
     read -p "按 Enter 键继续..."
@@ -370,7 +605,7 @@ show_main_menu() {
     echo ""
     echo "i. 📊 系统信息"
     echo "t. 🔧 测试连接"
-    echo "b. 🚀 YABS 性能测试"
+    echo "b. 🚀 YABS 性能测试 (多种模式)"
     echo "u. 🔄 更新脚本"
     echo "h. 📖 帮助信息"
     echo ""
@@ -422,7 +657,7 @@ main_menu() {
                 test_connection
                 ;;
             b|B)
-                run_yabs_benchmark
+                yabs_benchmark_menu
                 ;;
             u|U)
                 update_script
