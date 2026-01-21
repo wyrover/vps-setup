@@ -14,7 +14,7 @@ GITHUB_BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # 版本信息
-VERSION="1.2.3"
+VERSION="1.3.0"
 LAST_UPDATE="2026-01-21"
 
 
@@ -652,6 +652,9 @@ show_main_menu() {
     echo "9. 🔲 LXC容器管理"
     echo "   (LXC/LXD 容器创建、管理)"
     echo ""
+    echo "a. ☁️  Rclone 配置"
+    echo "   (云存储挂载、配置管理)"
+    echo ""
     echo "【测试工具】"
     echo ""
     echo "b. 🚀 YABS 性能测试 (多种模式)"
@@ -675,7 +678,7 @@ show_main_menu() {
 main_menu() {
     while true; do
         show_main_menu
-        read -p "请选择 [0-9/b/f/i/t/u/h]: " choice
+        read -p "请选择 [0-9/a-b/f/i/t/u/h]: " choice
         
         case $choice in
             1)
@@ -704,6 +707,9 @@ main_menu() {
                 ;;
             9)
                 run_subscript "lxc_management"
+                ;;
+            a|A)
+                run_subscript "rclone_setup"
                 ;;
             b|B)
                 yabs_benchmark_menu
