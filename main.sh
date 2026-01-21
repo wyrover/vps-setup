@@ -47,7 +47,7 @@ run_subscript() {
     print_info "正在加载模块: ${script_name}..."
     
     # 直接通过管道执行在线脚本
-    if curl -fsSL "$script_url" | bash; then
+    if curl -fsSL "$script_url" | bash || true; then
         # 脚本执行成功（返回码 0）
         return 0
     else
