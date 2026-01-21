@@ -239,20 +239,42 @@ change_ssh_port() {
             sudo ufw allow "$new_port/tcp" comment 'SSH'
             print_success "已添加新端口 $new_port 到防火墙"
             
-            # 如果旧端口不是 22，删除旧规则
-            if [ "$current_port" != "22" ]; then
-                echo ""
-                read -p "是否删除旧端口 $current_port 的防火墙规则？[y/N]: " remove_old
-                if [[ "$remove_old" =~ ^[Yy]$ ]]; then
-                    sudo ufw delete allow "$current_port/tcp"
-                    print_success "已删除旧端口 $current_port"
+            # 删除旧端口规则
+            echo ""
+            if [ "$current_port" != "$new_port" ]; then
+                # 检查旧端口是否在防火墙规则中
+                if sudo ufw status numbered | grep -q "$current_port/tcp"; then
+                    print_info "检测到旧端口 $current_port 的防火墙规则"
+                    read -p "是否删除旧端口 $current_port 的防火墙规则？[Y/n]: " remove_old
+                    
+                    if [[ ! "$remove_old" =~ ^[Nn]$ ]]; then
+                        # 删除所有匹配的规则（可能有多条）
+                        while sudo ufw status numbered | grep -q "$current_port/tcp"; do
+                            local rule_num=$(sudo ufw status numbered | grep "$current_port/tcp" | head -1 | grep -oP '^\[\s*\K[0-9]+')
+                            if [ -n "$rule_num" ]; then
+                                echo "y" | sudo ufw delete "$rule_num" 2>/dev/null
+                            else
+                                break
+                            fi
+                        done
+                        print_success "已删除旧端口 $current_port 的防火墙规则"
+                    else
+                        print_warning "保留旧端口 $current_port 的防火墙规则"
+                    fi
                 fi
             fi
+            
+            # 显示当前规则
+            echo ""
+            print_info "当前 SSH 相关防火墙规则："
+            sudo ufw status numbered | grep -E "SSH|$new_port" || print_warning "未找到 SSH 规则"
         else
             print_warning "UFW 防火墙未启用"
+            print_info "建议稍后运行选项 4 配置防火墙"
         fi
     else
         print_warning "未安装 UFW 防火墙"
+        print_info "建议稍后运行选项 4 安装配置防火墙"
     fi
     
     # 重启 SSH 服务
@@ -261,8 +283,9 @@ change_ssh_port() {
     echo ""
     print_error "重要提醒："
     echo "  1. 新的 SSH 端口: $new_port"
-    echo "  2. 请使用新端口重新连接: ssh -p $new_port user@host"
-    echo "  3. 建议在新窗口测试连接成功后再关闭当前会话"
+    echo "  2. 旧的 SSH 端口: $current_port"
+    echo "  3. 请使用新端口重新连接: ssh -p $new_port user@host"
+    echo "  4. 建议在新窗口测试连接成功后再关闭当前会话"
     echo ""
     read -p "确认重启 SSH 服务？[y/N]: " confirm_restart
     
@@ -276,6 +299,15 @@ change_ssh_port() {
             echo ""
             echo -e "${CYAN}新的连接命令:${NC}"
             echo "  ssh -p $new_port $(whoami)@$(hostname -I | awk '{print $1}')"
+            echo ""
+            echo -e "${YELLOW}配置变更摘要:${NC}"
+            echo "  • SSH 端口: $current_port -> $new_port"
+            if [ -f "$FAIL2BAN_JAIL" ]; then
+                echo "  • Fail2ban: 已更新"
+            fi
+            if command -v ufw &> /dev/null; then
+                echo "  • 防火墙: 已更新"
+            fi
             echo ""
             print_warning "请在新终端测试连接，确认成功后再关闭此会话！"
         else
@@ -294,6 +326,7 @@ change_ssh_port() {
     echo ""
     read -p "按 Enter 键返回..."
 }
+
 
 
 # 功能 3: 安装配置 Fail2ban
