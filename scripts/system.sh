@@ -215,3 +215,6 @@ system_menu() {
 
 # 启动系统配置菜单
 system_menu
+
+
+exit 0  # 这一行很关键！
