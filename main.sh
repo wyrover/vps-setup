@@ -5,7 +5,7 @@ set -euo pipefail
 # Debian 12 系统配置工具 - 主菜单
 # ============================================
 
-# GitHub 配置（请修改为你的 GitHub 用户名和仓库名）
+# GitHub 配置
 GITHUB_USER="wyrover"
 GITHUB_REPO="vps-setup"
 GITHUB_BRANCH="main"
@@ -38,7 +38,7 @@ print_info() {
     echo -e "${BLUE}ℹ${NC} $1"
 }
 
-# 直接执行在线子脚本
+# 直接执行在线子脚本（改进版）
 run_subscript() {
     local script_name=$1
     local script_url="${BASE_URL}/scripts/${script_name}.sh"
@@ -46,18 +46,23 @@ run_subscript() {
     echo ""
     print_info "正在加载模块: ${script_name}..."
     
-    # 直接通过管道执行在线脚本
-    if curl -fsSL "$script_url" | bash || true; then
-        # 脚本执行成功（返回码 0）
+    # 执行子脚本
+    set +e  # 临时关闭错误即退出
+    curl -fsSL "$script_url" | bash
+    local exit_code=$?
+    set -e  # 恢复错误即退出
+    
+    # 退出码 0 表示正常完成
+    # 退出码 1 可能是用户选择返回，也视为正常
+    if [[ $exit_code -eq 0 ]]; then
+        return 0
+    elif [[ $exit_code -eq 1 ]]; then
+        # 退出码 1 也接受（可能是用户正常返回）
         return 0
     else
-        local exit_code=$?
-        print_error "模块执行失败（退出码: $exit_code）"
-        print_warning "可能的原因："
-        echo "  1. 网络连接中断"
-        echo "  2. 文件不存在: ${script_url}"
-        echo "  3. 脚本执行出错"
-        echo ""
+        # 其他退出码才报错
+        print_error "模块执行异常（退出码: $exit_code）"
+        print_warning "这可能是网络问题或脚本错误"
         read -p "按 Enter 键返回主菜单..."
         return 1
     fi
@@ -79,13 +84,12 @@ test_connection() {
         print_warning "可能的原因："
         echo "  1. 仓库不存在或为私有仓库"
         echo "  2. 网络连接问题"
-        echo "  3. GitHub 配置错误"
+        echo "  3. 文件路径错误"
         echo ""
         echo "当前配置："
-        echo "  用户名: ${GITHUB_USER}"
-        echo "  仓库名: ${GITHUB_REPO}"
-        echo "  分支名: ${GITHUB_BRANCH}"
-        echo "  基础URL: ${BASE_URL}"
+        echo "  仓库: ${GITHUB_USER}/${GITHUB_REPO}"
+        echo "  分支: ${GITHUB_BRANCH}"
+        echo "  测试URL: ${test_url}"
         return 1
     fi
 }
@@ -165,11 +169,6 @@ main_menu() {
 if ! command -v curl &> /dev/null; then
     print_error "未找到 curl 命令，请先安装: sudo apt install curl"
     exit 1
-fi
-
-# 检查 sudo 权限
-if ! sudo -n true 2>/dev/null; then
-    print_warning "部分功能需要 sudo 权限"
 fi
 
 # 显示欢迎信息
