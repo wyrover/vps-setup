@@ -14,7 +14,7 @@ GITHUB_BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # 版本信息
-VERSION="1.2.0"
+VERSION="1.2.1"
 LAST_UPDATE="2026-01-21"
 
 
@@ -75,6 +75,50 @@ run_subscript() {
     }
     
     return 0
+}
+
+
+# 运行 YABS 性能测试
+run_yabs_benchmark() {
+    clear
+    echo "=========================================="
+    echo "   🚀 YABS 性能测试"
+    echo "=========================================="
+    echo ""
+    
+    print_info "YABS (Yet Another Bench Script) 性能测试工具"
+    echo ""
+    print_warning "此测试将："
+    echo "  1. 测试 CPU 性能"
+    echo "  2. 测试内存读写速度"
+    echo "  3. 测试磁盘 I/O 性能"
+    echo "  4. 测试网络速度（多个节点）"
+    echo ""
+    print_info "测试可能需要 5-10 分钟，请耐心等待..."
+    echo ""
+    
+    read -p "是否开始测试？(y/n): " confirm
+    
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        print_info "已取消测试"
+        read -p "按 Enter 键继续..."
+        return
+    fi
+    
+    echo ""
+    print_info "正在启动 YABS 测试..."
+    echo ""
+    
+    # 执行 YABS 测试
+    curl -sL https://yabs.sh | bash
+    
+    echo ""
+    echo "=========================================="
+    print_success "测试完成"
+    echo "=========================================="
+    echo ""
+    
+    read -p "按 Enter 键继续..."
 }
 
 
@@ -326,6 +370,7 @@ show_main_menu() {
     echo ""
     echo "i. 📊 系统信息"
     echo "t. 🔧 测试连接"
+    echo "b. 🚀 YABS 性能测试"
     echo "u. 🔄 更新脚本"
     echo "h. 📖 帮助信息"
     echo ""
@@ -340,7 +385,7 @@ show_main_menu() {
 main_menu() {
     while true; do
         show_main_menu
-        read -p "请选择 [0-9/i/t/u/h]: " choice
+        read -p "请选择 [0-9/i/t/b/u/h]: " choice
         
         case $choice in
             1)
@@ -375,6 +420,9 @@ main_menu() {
                 ;;
             t|T)
                 test_connection
+                ;;
+            b|B)
+                run_yabs_benchmark
                 ;;
             u|U)
                 update_script
