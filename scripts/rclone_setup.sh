@@ -8,7 +8,7 @@ set -euo pipefail
 
 
 # 配置
-RCLONE_CONFIG_DIR="$HOME/rclone"
+RCLONE_CONFIG_DIR="$HOME/.config/rclone"
 RCLONE_CONFIG_FILE="$RCLONE_CONFIG_DIR/rclone.conf"
 RCLONE_CACHE_DIR="/data/rclone-cache"
 RCLONE_MOUNT_BASE="/mnt"
@@ -251,11 +251,11 @@ setup_rclone_config() {
     
     # 验证配置
     print_info "验证配置..."
-    if rclone --config="$RCLONE_CONFIG_FILE" listremotes &> /dev/null; then
+    if rclone listremotes &> /dev/null; then
         print_success "配置验证成功"
         echo ""
         print_info "已配置的远程存储："
-        rclone --config="$RCLONE_CONFIG_FILE" listremotes | while read -r remote; do
+        rclone listremotes | while read -r remote; do
             echo "  • ${remote%:}"
         done
     else
@@ -347,8 +347,8 @@ mount_remote() {
     chown -R www-data:www-data "$cache_dir"
     print_success "目录创建完成"
     
-    # 生成挂载命令
-    local rclone_cmd="/usr/bin/rclone mount ${selected_remote}:${remote_path} ${mount_point} --config=${RCLONE_CONFIG_FILE} --cache-dir ${cache_dir} --vfs-cache-mode full --vfs-cache-max-size ${cache_size} --vfs-read-chunk-size 16M --allow-other --dir-cache-time 1h --poll-interval 1m --attr-timeout 1h --uid=${www_uid} --gid=${www_gid} --umask 002"
+    # 生成挂载命令（不再需要 --config 参数，使用默认路径）
+    local rclone_cmd="/usr/bin/rclone mount ${selected_remote}:${remote_path} ${mount_point} --cache-dir ${cache_dir} --vfs-cache-mode full --vfs-cache-max-size ${cache_size} --vfs-read-chunk-size 16M --allow-other --dir-cache-time 1h --poll-interval 1m --attr-timeout 1h --uid=${www_uid} --gid=${www_gid} --umask 002"
     
     # 测试挂载
     echo ""
@@ -425,6 +425,7 @@ EOF
         echo "  远程: ${selected_remote}:${remote_path}"
         echo "  挂载点: ${mount_point}"
         echo "  缓存: ${cache_dir} (${cache_size})"
+        echo "  配置: ${RCLONE_CONFIG_FILE}"
         echo "  状态: $(supervisorctl status rclone-${selected_remote} | awk '{print $2}')"
     else
         print_error "挂载服务启动失败"
@@ -468,6 +469,19 @@ view_mount_status() {
         else
             print_warning "未配置 rclone 服务"
         fi
+    fi
+    
+    # 显示配置文件路径
+    echo ""
+    echo "=========================================="
+    print_info "配置信息："
+    echo "  配置文件: ${RCLONE_CONFIG_FILE}"
+    if check_config_exists; then
+        echo "  状态: 存在"
+        local remote_count=$(get_remote_list | wc -l)
+        echo "  远程存储: ${remote_count} 个"
+    else
+        echo "  状态: 不存在"
     fi
     
     read -p "按 Enter 键继续..."
@@ -608,6 +622,7 @@ show_rclone_menu() {
     echo -e "${CYAN}当前状态:${NC}"
     echo -e "  Rclone: ${GREEN}${rclone_status}${NC}"
     echo -e "  配置文件: ${GREEN}${config_status}${NC}"
+    echo -e "  配置路径: ${CYAN}${RCLONE_CONFIG_FILE}${NC}"
     echo -e "  挂载服务: ${GREEN}${mount_count} 个${NC}"
     echo ""
     echo "1. 安装 Rclone"
