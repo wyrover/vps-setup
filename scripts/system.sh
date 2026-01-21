@@ -217,4 +217,3 @@ system_menu() {
 system_menu
 
 
-exit 0  # 这一行很关键！
