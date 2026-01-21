@@ -62,6 +62,23 @@ get_ssh_keys() {
 }
 
 
+# 检查密码登录状态
+get_password_auth_status() {
+    local password_auth=$(grep -E "^PasswordAuthentication" "$SSHD_CONFIG" 2>/dev/null | awk '{print $2}')
+    
+    if [ -z "$password_auth" ]; then
+        # 如果没有配置，默认是 yes
+        echo "已启用"
+    elif [ "$password_auth" = "yes" ]; then
+        echo "已启用"
+    elif [ "$password_auth" = "no" ]; then
+        echo "已禁用"
+    else
+        echo "未知"
+    fi
+}
+
+
 # 显示 SSH 公钥详情
 show_ssh_keys_detail() {
     echo ""
@@ -241,7 +258,142 @@ setup_ssh_key() {
 }
 
 
-# 功能 2: 修改 SSH 端口
+# 功能 2: 禁用密码登录
+disable_password_auth() {
+    echo ""
+    echo "=========================================="
+    echo "禁用 SSH 密码登录"
+    echo "=========================================="
+    echo ""
+    
+    # 检查当前状态
+    local current_status=$(get_password_auth_status)
+    print_info "当前密码登录状态: $current_status"
+    echo ""
+    
+    if [ "$current_status" = "已禁用" ]; then
+        print_success "密码登录已经禁用，无需操作"
+        read -p "按 Enter 键返回..."
+        return 0
+    fi
+    
+    # 检查是否有公钥
+    local key_count=$(get_ssh_keys)
+    if [ "$key_count" = "未配置" ]; then
+        print_error "警告：未配置任何 SSH 公钥！"
+        echo ""
+        print_warning "禁用密码登录前必须先配置至少一个 SSH 公钥"
+        print_info "否则将无法登录服务器！"
+        echo ""
+        read -p "是否先配置 SSH 公钥？[Y/n]: " setup_key
+        
+        if [[ ! "$setup_key" =~ ^[Nn]$ ]]; then
+            setup_ssh_key
+            return 0
+        else
+            print_error "已取消操作"
+            read -p "按 Enter 键返回..."
+            return 1
+        fi
+    fi
+    
+    # 显示警告
+    echo -e "${RED}重要警告：${NC}"
+    echo "  1. 禁用后只能使用 SSH 密钥登录"
+    echo "  2. 必须确保公钥配置正确"
+    echo "  3. 建议先在新窗口测试密钥登录"
+    echo ""
+    echo -e "${CYAN}当前已配置公钥：${key_count}${NC}"
+    echo ""
+    read -p "确认禁用密码登录？[y/N]: " confirm
+    
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        print_info "已取消操作"
+        read -p "按 Enter 键返回..."
+        return 0
+    fi
+    
+    # 备份配置文件
+    echo ""
+    echo "[步骤 1/3] 备份配置文件..."
+    sudo cp "$SSHD_CONFIG" "${SSHD_CONFIG}.backup.$(date +%Y%m%d%H%M%S)"
+    print_success "已备份配置文件"
+    
+    # 修改配置
+    echo ""
+    echo "[步骤 2/3] 修改 SSH 配置..."
+    
+    # 禁用密码认证
+    if grep -q "^PasswordAuthentication" "$SSHD_CONFIG"; then
+        sudo sed -i 's/^PasswordAuthentication.*/PasswordAuthentication no/' "$SSHD_CONFIG"
+    elif grep -q "^#PasswordAuthentication" "$SSHD_CONFIG"; then
+        sudo sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication no/' "$SSHD_CONFIG"
+    else
+        echo "PasswordAuthentication no" | sudo tee -a "$SSHD_CONFIG" > /dev/null
+    fi
+    
+    # 禁用质询响应认证
+    if grep -q "^ChallengeResponseAuthentication" "$SSHD_CONFIG"; then
+        sudo sed -i 's/^ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$SSHD_CONFIG"
+    elif grep -q "^#ChallengeResponseAuthentication" "$SSHD_CONFIG"; then
+        sudo sed -i 's/^#ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$SSHD_CONFIG"
+    else
+        echo "ChallengeResponseAuthentication no" | sudo tee -a "$SSHD_CONFIG" > /dev/null
+    fi
+    
+    # 确保公钥认证启用
+    if grep -q "^PubkeyAuthentication no" "$SSHD_CONFIG"; then
+        sudo sed -i 's/^PubkeyAuthentication no/PubkeyAuthentication yes/' "$SSHD_CONFIG"
+    elif grep -q "^#PubkeyAuthentication" "$SSHD_CONFIG"; then
+        sudo sed -i 's/^#PubkeyAuthentication.*/PubkeyAuthentication yes/' "$SSHD_CONFIG"
+    elif ! grep -q "^PubkeyAuthentication" "$SSHD_CONFIG"; then
+        echo "PubkeyAuthentication yes" | sudo tee -a "$SSHD_CONFIG" > /dev/null
+    fi
+    
+    print_success "配置已修改"
+    
+    # 重启 SSH 服务
+    echo ""
+    echo "[步骤 3/3] 重启 SSH 服务..."
+    echo ""
+    print_warning "即将重启 SSH 服务"
+    print_error "请确保在另一个窗口测试过密钥登录！"
+    echo ""
+    read -p "确认重启 SSH 服务？[y/N]: " confirm_restart
+    
+    if [[ "$confirm_restart" =~ ^[Yy]$ ]]; then
+        if sudo systemctl restart sshd 2>/dev/null || sudo systemctl restart ssh 2>/dev/null; then
+            print_success "SSH 服务已重启"
+            echo ""
+            echo "=========================================="
+            print_success "密码登录已禁用！"
+            echo "=========================================="
+            echo ""
+            print_info "安全配置："
+            echo "  • 密码登录: 已禁用"
+            echo "  • 公钥登录: 已启用"
+            echo "  • 配置公钥: $key_count"
+            echo ""
+            print_warning "请在新窗口测试密钥登录，确认成功后再关闭此会话！"
+        else
+            print_error "SSH 服务重启失败"
+            echo ""
+            print_warning "正在回滚配置..."
+            sudo sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' "$SSHD_CONFIG"
+            sudo systemctl restart sshd 2>/dev/null || sudo systemctl restart ssh 2>/dev/null
+            print_info "已回滚配置"
+        fi
+    else
+        print_warning "已取消重启，配置已修改但未生效"
+        print_info "手动重启 SSH 服务: sudo systemctl restart sshd"
+    fi
+    
+    echo ""
+    read -p "按 Enter 键返回..."
+}
+
+
+# 功能 3: 修改 SSH 端口
 change_ssh_port() {
     echo ""
     echo "=========================================="
@@ -361,11 +513,11 @@ change_ssh_port() {
             sudo ufw status numbered | grep -E "SSH|$new_port" || print_warning "未找到 SSH 规则"
         else
             print_warning "UFW 防火墙未启用"
-            print_info "建议稍后运行选项 4 配置防火墙"
+            print_info "建议稍后运行选项 5 配置防火墙"
         fi
     else
         print_warning "未安装 UFW 防火墙"
-        print_info "建议稍后运行选项 4 安装配置防火墙"
+        print_info "建议稍后运行选项 5 安装配置防火墙"
     fi
     
     # 重启 SSH 服务
@@ -419,7 +571,7 @@ change_ssh_port() {
 }
 
 
-# 功能 3: 安装配置 Fail2ban
+# 功能 4: 安装配置 Fail2ban
 setup_fail2ban() {
     echo ""
     echo "=========================================="
@@ -486,7 +638,7 @@ EOF
 }
 
 
-# 功能 4: 配置防火墙
+# 功能 5: 配置防火墙
 setup_firewall() {
     echo ""
     echo "=========================================="
@@ -550,7 +702,7 @@ setup_firewall() {
 }
 
 
-# 功能 5: 一键安全加固
+# 功能 6: 一键安全加固
 quick_security() {
     echo ""
     echo "=========================================="
@@ -559,14 +711,16 @@ quick_security() {
     echo ""
     echo "将依次执行："
     echo "1. 配置 SSH 公钥"
-    echo "2. 修改 SSH 端口（随机）"
-    echo "3. 安装配置 Fail2ban"
-    echo "4. 安装配置防火墙"
+    echo "2. 禁用密码登录"
+    echo "3. 修改 SSH 端口（随机）"
+    echo "4. 安装配置 Fail2ban"
+    echo "5. 安装配置防火墙"
     echo ""
     read -p "确认继续？[y/N]: " confirm
     
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
         setup_ssh_key
+        disable_password_auth
         change_ssh_port
         setup_fail2ban
         setup_firewall
@@ -586,6 +740,13 @@ show_security_menu() {
     clear
     local current_port=$(get_current_ssh_port)
     local key_count=$(get_ssh_keys)
+    local password_status=$(get_password_auth_status)
+    
+    # 根据状态设置颜色
+    local password_color="${RED}"
+    if [ "$password_status" = "已禁用" ]; then
+        password_color="${GREEN}"
+    fi
     
     echo "=========================================="
     echo "   安全配置菜单"
@@ -594,12 +755,14 @@ show_security_menu() {
     echo -e "${CYAN}当前配置状态:${NC}"
     echo -e "  SSH 端口: ${GREEN}${current_port}${NC}"
     echo -e "  SSH 公钥: ${GREEN}${key_count}${NC}"
+    echo -e "  密码登录: ${password_color}${password_status}${NC}"
     echo ""
     echo "1. 添加 SSH 公钥（启用密钥认证）"
-    echo "2. 修改 SSH 端口（随机 20000-60000）"
-    echo "3. 安装配置 Fail2ban（3次失败永久封禁）"
-    echo "4. 安装配置防火墙（默认开放SSH/80/443）"
-    echo "5. 一键安全加固（执行1+2+3+4）"
+    echo "2. 禁用密码登录（仅允许密钥登录）"
+    echo "3. 修改 SSH 端口（随机 20000-60000）"
+    echo "4. 安装配置 Fail2ban（3次失败永久封禁）"
+    echo "5. 安装配置防火墙（默认开放SSH/80/443）"
+    echo "6. 一键安全加固（执行1+2+3+4+5）"
     echo ""
     echo "v. 查看公钥详情"
     echo "0. 返回主菜单"
@@ -610,22 +773,25 @@ show_security_menu() {
 security_menu() {
     while true; do
         show_security_menu
-        read -p "请选择操作 [0-5/v]: " choice
+        read -p "请选择操作 [0-6/v]: " choice
         
         case $choice in
             1)
                 setup_ssh_key
                 ;;
             2)
-                change_ssh_port
+                disable_password_auth
                 ;;
             3)
-                setup_fail2ban
+                change_ssh_port
                 ;;
             4)
-                setup_firewall
+                setup_fail2ban
                 ;;
             5)
+                setup_firewall
+                ;;
+            6)
                 quick_security
                 ;;
             v|V)
