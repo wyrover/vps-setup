@@ -47,6 +47,85 @@ get_current_ssh_port() {
 }
 
 
+# 获取已配置的 SSH 公钥
+get_ssh_keys() {
+    if [ -f "$AUTHORIZED_KEYS" ]; then
+        local key_count=$(grep -v "^#\|^$" "$AUTHORIZED_KEYS" 2>/dev/null | wc -l)
+        if [ "$key_count" -eq 0 ]; then
+            echo "未配置"
+        else
+            echo "$key_count 个"
+        fi
+    else
+        echo "未配置"
+    fi
+}
+
+
+# 显示 SSH 公钥详情
+show_ssh_keys_detail() {
+    echo ""
+    echo "=========================================="
+    echo "当前已配置的 SSH 公钥"
+    echo "=========================================="
+    echo ""
+    
+    if [ ! -f "$AUTHORIZED_KEYS" ]; then
+        print_warning "未找到 authorized_keys 文件"
+        echo "文件路径: $AUTHORIZED_KEYS"
+        return
+    fi
+    
+    local keys=$(grep -v "^#\|^$" "$AUTHORIZED_KEYS" 2>/dev/null)
+    
+    if [ -z "$keys" ]; then
+        print_warning "未配置任何公钥"
+        echo ""
+        print_info "公钥文件: $AUTHORIZED_KEYS"
+        return
+    fi
+    
+    local index=1
+    while IFS= read -r key; do
+        if [ -n "$key" ]; then
+            echo -e "${CYAN}[公钥 $index]${NC}"
+            
+            # 提取密钥类型
+            local key_type=$(echo "$key" | awk '{print $1}')
+            echo "  类型: $key_type"
+            
+            # 提取指纹
+            local fingerprint=$(echo "$key" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}')
+            if [ -n "$fingerprint" ]; then
+                echo "  指纹: $fingerprint"
+            fi
+            
+            # 提取注释（通常是邮箱或用户名）
+            local comment=$(echo "$key" | awk '{for(i=3;i<=NF;i++) printf "%s ", $i}' | sed 's/ $//')
+            if [ -n "$comment" ]; then
+                echo "  备注: $comment"
+            fi
+            
+            # 显示密钥预览（前后各20个字符）
+            local key_data=$(echo "$key" | awk '{print $2}')
+            local key_len=${#key_data}
+            if [ "$key_len" -gt 50 ]; then
+                local preview="${key_data:0:20}...${key_data: -20}"
+                echo "  预览: $preview"
+            else
+                echo "  预览: $key_data"
+            fi
+            
+            echo ""
+            ((index++))
+        fi
+    done <<< "$keys"
+    
+    echo "文件路径: $AUTHORIZED_KEYS"
+    echo "=========================================="
+}
+
+
 # 生成随机端口 (20000-60000)
 generate_random_port() {
     echo $((20000 + RANDOM % 40001))
@@ -75,6 +154,13 @@ setup_ssh_key() {
     echo "=========================================="
     echo "添加 SSH 公钥"
     echo "=========================================="
+    
+    # 先显示当前公钥
+    show_ssh_keys_detail
+    
+    echo ""
+    print_info "添加新的 SSH 公钥"
+    echo ""
     
     # 检查公钥
     if [[ "$PUBKEY" == "YOUR_SSH_PUBLIC_KEY_HERE" ]]; then
@@ -146,6 +232,11 @@ setup_ssh_key() {
     
     echo ""
     print_success "SSH 公钥配置完成！"
+    echo ""
+    
+    # 显示更新后的公钥列表
+    show_ssh_keys_detail
+    
     read -p "按 Enter 键返回..."
 }
 
@@ -328,7 +419,6 @@ change_ssh_port() {
 }
 
 
-
 # 功能 3: 安装配置 Fail2ban
 setup_fail2ban() {
     echo ""
@@ -495,12 +585,15 @@ quick_security() {
 show_security_menu() {
     clear
     local current_port=$(get_current_ssh_port)
+    local key_count=$(get_ssh_keys)
     
     echo "=========================================="
     echo "   安全配置菜单"
     echo "=========================================="
     echo ""
-    echo -e "${CYAN}当前 SSH 端口: ${GREEN}${current_port}${NC}"
+    echo -e "${CYAN}当前配置状态:${NC}"
+    echo -e "  SSH 端口: ${GREEN}${current_port}${NC}"
+    echo -e "  SSH 公钥: ${GREEN}${key_count}${NC}"
     echo ""
     echo "1. 添加 SSH 公钥（启用密钥认证）"
     echo "2. 修改 SSH 端口（随机 20000-60000）"
@@ -508,6 +601,7 @@ show_security_menu() {
     echo "4. 安装配置防火墙（默认开放SSH/80/443）"
     echo "5. 一键安全加固（执行1+2+3+4）"
     echo ""
+    echo "v. 查看公钥详情"
     echo "0. 返回主菜单"
     echo "=========================================="
 }
@@ -516,7 +610,7 @@ show_security_menu() {
 security_menu() {
     while true; do
         show_security_menu
-        read -p "请选择操作 [0-5]: " choice
+        read -p "请选择操作 [0-5/v]: " choice
         
         case $choice in
             1)
@@ -533,6 +627,11 @@ security_menu() {
                 ;;
             5)
                 quick_security
+                ;;
+            v|V)
+                show_ssh_keys_detail
+                echo ""
+                read -p "按 Enter 键返回..."
                 ;;
             0)
                 echo ""
