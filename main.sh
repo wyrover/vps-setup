@@ -14,7 +14,7 @@ GITHUB_BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # 版本信息
-VERSION="1.1.0"
+VERSION="1.2.0"
 LAST_UPDATE="2026-01-21"
 
 
@@ -255,7 +255,10 @@ show_help() {
     echo "  3. 监控查看  - 系统状态、日志查看"
     echo "  4. 网络配置  - 网络接口、DNS、路由"
     echo "  5. 日志管理  - 日志轮转（3天保留策略）"
-    echo "  6. 应用管理  - 数据库、Web服务器等"
+    echo "  6. 数据库管理 - PostgreSQL、MySQL/MariaDB"
+    echo "  7. Web服务器 - OpenResty、Nginx、Caddy"
+    echo "  8. 容器管理  - Docker、Supervisor"
+    echo "  9. LXC容器   - LXC/LXD 容器管理"
     echo ""
     
     echo -e "${CYAN}快捷使用:${NC}"
@@ -311,10 +314,13 @@ show_main_menu() {
     echo "   (PostgreSQL、MySQL/MariaDB)"
     echo ""
     echo "7. 🌍 Web服务管理"
-    echo "   (OpenResty、Nginx)"
+    echo "   (OpenResty、Nginx、Caddy)"
     echo ""
     echo "8. 📦 容器管理"
     echo "   (Docker、Supervisor)"
+    echo ""
+    echo "9. 🔲 LXC容器管理"
+    echo "   (LXC/LXD 容器创建、管理)"
     echo ""
     echo "【工具】"
     echo ""
@@ -334,7 +340,7 @@ show_main_menu() {
 main_menu() {
     while true; do
         show_main_menu
-        read -p "请选择 [0-8/i/t/u/h]: " choice
+        read -p "请选择 [0-9/i/t/u/h]: " choice
         
         case $choice in
             1)
@@ -360,6 +366,9 @@ main_menu() {
                 ;;
             8)
                 run_subscript "container_management"
+                ;;
+            9)
+                run_subscript "lxc_management"
                 ;;
             i|I)
                 show_system_info
