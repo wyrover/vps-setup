@@ -1108,36 +1108,36 @@ main_menu() {
         
         echo ""
         echo -e "${BLUE}[基础环境]${NC}"
-        echo "0.  安装 LXC 环境"
-        echo "1.  配置网络桥接 (10.0.0.0/24)"
-        echo "2.  配置宿主机 Swap"
+        echo "1.  安装 LXC 环境"
+        echo "2.  配置网络桥接 (10.0.0.0/24)"
+        echo "3.  配置宿主机 Swap"
         echo ""
         echo -e "${BLUE}[日常管理]${NC}"
-        echo "3.  创建 Debian 12 容器"
-        echo "4.  启动容器"
-        echo "5.  停止容器"
-        echo "6.  进入容器"
-        echo "7.  删除容器"
-        echo "8.  克隆容器"
+        echo "4.  创建 Debian 12 容器"
+        echo "5.  启动容器"
+        echo "6.  停止容器"
+        echo "7.  进入容器"
+        echo "8.  删除容器"
+        echo "9.  克隆容器"
         echo ""
         echo -e "${BLUE}[配置修改]${NC}"
-        echo "9.  设置资源限制"
-        echo "10. 设置静态 IP"
-        echo "11. 设置容器备注"
-        echo "12. 设置开机自启"
-        echo "20. 切换特权模式"
+        echo "10. 设置资源限制"
+        echo "11. 设置静态 IP"
+        echo "12. 设置容器备注"
+        echo "13. 设置开机自启"
+        echo "14. 切换特权模式"
         echo ""
         echo -e "${BLUE}[数据维护]${NC}"
-        echo "13. 备份容器"
-        echo "14. 恢复容器"
-        echo "22. 删除所有容器 (危险)"
+        echo "15. 备份容器"
+        echo "16. 恢复容器"
+        echo "17. 删除所有容器 (危险)"
         echo ""
         echo -e "${CYAN}[监控面板]${NC}"
-        echo "15. 查看网络状态"
-        echo "16. 端口转发管理"
-        echo "17. 全景控制台"
-        echo "18. 资源使用快照"
-        echo "19. 配置端口转发"
+        echo "18. 查看网络状态"
+        echo "19. 端口转发管理"
+        echo "20. 全景控制台"
+        echo "21. 资源使用快照"
+        echo "22. 配置端口转发"
         echo "23. 查看容器配置 (调试)"
         echo ""
         echo "0.  返回主菜单"
@@ -1146,28 +1146,28 @@ main_menu() {
         read -p "请选择操作: " choice
         
         case $choice in
-            0) install_lxc ;;
-            1) setup_network_bridge ;;
-            2) configure_host_swap ;;
-            3) create_debian12 ;;
-            4) start_container ;;
-            5) stop_container ;;
-            6) enter_container ;;
-            7) delete_container ;;
-            8) clone_container ;;
-            9) set_resource_limits ;;
-            10) set_static_ip ;;
-            11) set_container_remark ;;
-            12) set_container_autostart ;;
-            13) backup_container ;;
-            14) restore_container ;;
-            15) show_network_status ;;
-            16) manage_port_forwards ;;
-            17) show_dashboard ;;
-            18) show_realtime_stats ;;
-            19) setup_port_forward ;;
-            20) toggle_privileged ;;
-            22) delete_all_containers ;;
+            1) install_lxc ;;
+            2) setup_network_bridge ;;
+            3) configure_host_swap ;;
+            4) create_debian12 ;;
+            5) start_container ;;
+            6) stop_container ;;
+            7) enter_container ;;
+            8) delete_container ;;
+            9) clone_container ;;
+            10) set_resource_limits ;;
+            11) set_static_ip ;;
+            12) set_container_remark ;;
+            13) set_container_autostart ;;
+            14) toggle_privileged ;;
+            15) backup_container ;;
+            16) restore_container ;;
+            17) delete_all_containers ;;
+            18) show_network_status ;;
+            19) manage_port_forwards ;;
+            20) show_dashboard ;;
+            21) show_realtime_stats ;;
+            22) setup_port_forward ;;
             23) debug_container_config ;;
             0) exit 0 ;;
             *) print_error "无效选择"; sleep 1 ;;
