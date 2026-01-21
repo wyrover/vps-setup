@@ -5,7 +5,7 @@ set -euo pipefail
 # Debian 12 系统配置工具 - 主菜单
 # ============================================
 
-# GitHub 配置
+# GitHub 配置（请修改为你的 GitHub 用户名和仓库名）
 GITHUB_USER="wyrover"
 GITHUB_REPO="vps-setup"
 GITHUB_BRANCH="main"
@@ -38,7 +38,7 @@ print_info() {
     echo -e "${BLUE}ℹ${NC} $1"
 }
 
-# 下载并执行子脚本
+# 直接执行在线子脚本
 run_subscript() {
     local script_name=$1
     local script_url="${BASE_URL}/scripts/${script_name}.sh"
@@ -46,12 +46,46 @@ run_subscript() {
     echo ""
     print_info "正在加载模块: ${script_name}..."
     
-    # 下载并执行子脚本
+    # 直接通过管道执行在线脚本
     if curl -fsSL "$script_url" | bash; then
+        # 脚本执行成功（返回码 0）
         return 0
     else
-        print_error "模块加载失败: ${script_name}"
+        local exit_code=$?
+        print_error "模块执行失败（退出码: $exit_code）"
+        print_warning "可能的原因："
+        echo "  1. 网络连接中断"
+        echo "  2. 文件不存在: ${script_url}"
+        echo "  3. 脚本执行出错"
+        echo ""
         read -p "按 Enter 键返回主菜单..."
+        return 1
+    fi
+}
+
+# 测试连接
+test_connection() {
+    echo ""
+    print_info "测试 GitHub 连接..."
+    
+    local test_url="${BASE_URL}/scripts/system.sh"
+    
+    if curl -fsSL --head "$test_url" &> /dev/null; then
+        print_success "GitHub 连接正常"
+        echo "  测试URL: ${test_url}"
+        return 0
+    else
+        print_error "无法连接到 GitHub"
+        print_warning "可能的原因："
+        echo "  1. 仓库不存在或为私有仓库"
+        echo "  2. 网络连接问题"
+        echo "  3. GitHub 配置错误"
+        echo ""
+        echo "当前配置："
+        echo "  用户名: ${GITHUB_USER}"
+        echo "  仓库名: ${GITHUB_REPO}"
+        echo "  分支名: ${GITHUB_BRANCH}"
+        echo "  基础URL: ${BASE_URL}"
         return 1
     fi
 }
@@ -78,8 +112,9 @@ show_main_menu() {
     echo "   (Fail2ban状态、防火墙状态、系统信息等)"
     echo ""
     echo "4. 🌐 网络配置"
-    echo "   (静态IP、DNS、端口映射等)"
+    echo "   (网络接口、路由、DNS等)"
     echo ""
+    echo "9. 🔧 测试连接"
     echo "0. 退出"
     echo ""
     echo "=========================================="
@@ -90,7 +125,7 @@ show_main_menu() {
 main_menu() {
     while true; do
         show_main_menu
-        read -p "请选择分类 [0-4]: " choice
+        read -p "请选择分类 [0-9]: " choice
         
         case $choice in
             1)
@@ -104,6 +139,10 @@ main_menu() {
                 ;;
             4)
                 run_subscript "network"
+                ;;
+            9)
+                test_connection
+                read -p "按 Enter 键继续..."
                 ;;
             0)
                 echo ""
