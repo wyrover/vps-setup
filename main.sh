@@ -14,7 +14,7 @@ GITHUB_BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # 版本信息
-VERSION="1.2.2"
+VERSION="1.2.3"
 LAST_UPDATE="2026-01-21"
 
 
@@ -75,6 +75,57 @@ run_subscript() {
     }
     
     return 0
+}
+
+
+# 融合怪综合测试
+run_fusion_benchmark() {
+    clear
+    echo "=========================================="
+    echo "   🎯 融合怪综合测试"
+    echo "=========================================="
+    echo ""
+    
+    print_info "融合怪 (ECS) 综合性能测试工具"
+    echo ""
+    print_warning "此测试将进行以下项目："
+    echo "  1. 系统基础信息检测"
+    echo "  2. CPU 性能测试"
+    echo "  3. 内存性能测试"
+    echo "  4. 磁盘 I/O 测试"
+    echo "  5. 网络性能测试（多节点）"
+    echo "  6. 流媒体解锁测试"
+    echo "  7. IP 质量检测"
+    echo "  8. 三网路由追踪"
+    echo ""
+    print_info "测试时间: 约 15-30 分钟"
+    print_warning "测试会产生较大网络流量"
+    echo ""
+    
+    read -p "是否开始测试？(y/n): " confirm
+    
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        print_info "已取消测试"
+        read -p "按 Enter 键继续..."
+        return
+    fi
+    
+    echo ""
+    print_info "正在启动融合怪测试..."
+    echo ""
+    echo "=========================================="
+    echo ""
+    
+    # 直接执行融合怪脚本（不写入文件）
+    bash <(curl -L https://github.com/spiritLHLS/ecs/raw/main/ecs.sh)
+    
+    echo ""
+    echo "=========================================="
+    print_success "测试完成"
+    echo "=========================================="
+    echo ""
+    
+    read -p "按 Enter 键继续..."
 }
 
 
@@ -601,11 +652,15 @@ show_main_menu() {
     echo "9. 🔲 LXC容器管理"
     echo "   (LXC/LXD 容器创建、管理)"
     echo ""
-    echo "【工具】"
+    echo "【测试工具】"
+    echo ""
+    echo "b. 🚀 YABS 性能测试 (多种模式)"
+    echo "f. 🎯 融合怪综合测试 (全面评估)"
+    echo ""
+    echo "【系统工具】"
     echo ""
     echo "i. 📊 系统信息"
     echo "t. 🔧 测试连接"
-    echo "b. 🚀 YABS 性能测试 (多种模式)"
     echo "u. 🔄 更新脚本"
     echo "h. 📖 帮助信息"
     echo ""
@@ -620,7 +675,7 @@ show_main_menu() {
 main_menu() {
     while true; do
         show_main_menu
-        read -p "请选择 [0-9/i/t/b/u/h]: " choice
+        read -p "请选择 [0-9/b/f/i/t/u/h]: " choice
         
         case $choice in
             1)
@@ -650,14 +705,17 @@ main_menu() {
             9)
                 run_subscript "lxc_management"
                 ;;
+            b|B)
+                yabs_benchmark_menu
+                ;;
+            f|F)
+                run_fusion_benchmark
+                ;;
             i|I)
                 show_system_info
                 ;;
             t|T)
                 test_connection
-                ;;
-            b|B)
-                yabs_benchmark_menu
                 ;;
             u|U)
                 update_script
