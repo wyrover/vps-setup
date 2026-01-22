@@ -14,8 +14,8 @@ GITHUB_BRANCH="main"
 BASE_URL="https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}"
 
 # 版本信息
-VERSION="1.3.0"
-LAST_UPDATE="2026-01-21"
+VERSION="1.4.0"
+LAST_UPDATE="2026-01-22"
 
 
 # 颜色定义
@@ -646,19 +646,22 @@ show_main_menu() {
     echo "7. 🌍 Web服务管理"
     echo "   (OpenResty、Nginx、Caddy)"
     echo ""
-    echo "8. 📦 容器管理"
+    echo "8. 🌐 Web应用安装"
+    echo "   (Tiny Tiny RSS、WordPress、phpMyAdmin 等)"
+    echo ""
+    echo "9. 📦 容器管理"
     echo "   (Docker、Supervisor)"
     echo ""
-    echo "9. 🔲 LXC容器管理"
+    echo "a. 🔲 LXC容器管理"
     echo "   (LXC/LXD 容器创建、管理)"
     echo ""
-    echo "a. ☁️  Rclone 配置"
+    echo "b. ☁️  Rclone 配置"
     echo "   (云存储挂载、配置管理)"
     echo ""
     echo "【测试工具】"
     echo ""
-    echo "b. 🚀 YABS 性能测试 (多种模式)"
-    echo "f. 🎯 融合怪综合测试 (全面评估)"
+    echo "c. 🚀 YABS 性能测试 (多种模式)"
+    echo "d. 🎯 融合怪综合测试 (全面评估)"
     echo ""
     echo "【系统工具】"
     echo ""
@@ -674,11 +677,10 @@ show_main_menu() {
     echo "=========================================="
 }
 
-
 main_menu() {
     while true; do
         show_main_menu
-        read -p "请选择 [0-9/a-b/f/i/t/u/h]: " choice
+        read -p "请选择 [0-9/a-d/i/t/u/h]: " choice
         
         case $choice in
             1)
@@ -703,18 +705,21 @@ main_menu() {
                 run_subscript "web_server"
                 ;;
             8)
-                run_subscript "container_management"
+                run_subscript "web_apps"
                 ;;
             9)
-                run_subscript "lxc_management"
+                run_subscript "container_management"
                 ;;
             a|A)
-                run_subscript "rclone_setup"
+                run_subscript "lxc_management"
                 ;;
             b|B)
+                run_subscript "rclone_setup"
+                ;;
+            c|C)
                 yabs_benchmark_menu
                 ;;
-            f|F)
+            d|D)
                 run_fusion_benchmark
                 ;;
             i|I)
