@@ -648,7 +648,7 @@ show_main_menu() {
     echo "   (PostgreSQL、MySQL/MariaDB)"
     echo ""
     echo "7. 🌍 Web服务管理"
-    echo "   (OpenResty、Nginx、Caddy)"
+    echo "   (OpenResty、Nginx、Caddy、PHP8.5、NVM(node))"
     echo ""
     echo "8. 🌐 Web应用安装"
     echo "   (Tiny Tiny RSS、WordPress、phpMyAdmin 等)"
