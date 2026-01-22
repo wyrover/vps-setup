@@ -4,7 +4,7 @@ set -euo pipefail
 
 # ============================================
 # Web 服务器管理脚本
-# 支持 OpenResty、Nginx、Caddy、PHP 8.5、NVM
+# 支持 OpenResty、Nginx、Caddy、PHP 8.5、NVM、Supervisor
 # ============================================
 
 
@@ -1013,6 +1013,100 @@ NODEINFO
 
 
 # ============================================
+# 安装 Supervisor
+# ============================================
+
+
+install_supervisor() {
+    clear
+    echo "=========================================="
+    echo "   安装 Supervisor"
+    echo "=========================================="
+    echo ""
+    
+    check_root || return
+    
+    if command -v supervisorctl &> /dev/null; then
+        local version=$(supervisorctl version 2>/dev/null)
+        print_warning "Supervisor 已安装 (版本: $version)"
+        echo ""
+        read -p "是否重新安装？[y/N]: " reinstall
+        if [[ ! "$reinstall" =~ ^[Yy]$ ]]; then
+            press_enter
+            return
+        fi
+    fi
+    
+    print_info "开始安装 Supervisor..."
+    echo ""
+    
+    print_info "[1/3] 更新软件包列表..."
+    apt update
+    
+    print_info "[2/3] 安装 Supervisor..."
+    apt install -y supervisor
+    
+    if [ $? -eq 0 ]; then
+        print_success "Supervisor 安装成功"
+        echo ""
+        supervisorctl version
+        
+        print_info "[3/3] 配置 Supervisor..."
+        
+        # 启动服务
+        systemctl start supervisor
+        systemctl enable supervisor
+        
+        print_success "Supervisor 服务已启动并设置为开机自启"
+        
+        # 创建配置目录
+        mkdir -p /etc/supervisor/conf.d
+        
+        # 创建日志目录
+        mkdir -p /var/log/supervisor
+        
+        # 优化 supervisord 主配置
+        local main_conf="/etc/supervisor/supervisord.conf"
+        if [ -f "$main_conf" ]; then
+            # 备份原配置
+            cp "$main_conf" "${main_conf}.bak.$(date +%Y%m%d_%H%M%S)"
+            
+            # 确保包含 conf.d 目录
+            if ! grep -q "files = /etc/supervisor/conf.d/\*.conf" "$main_conf"; then
+                echo "" >> "$main_conf"
+                echo "[include]" >> "$main_conf"
+                echo "files = /etc/supervisor/conf.d/*.conf" >> "$main_conf"
+            fi
+        fi
+        
+        print_success "配置目录已创建: /etc/supervisor/conf.d"
+        print_success "日志目录已创建: /var/log/supervisor"
+        
+        echo ""
+        print_info "安装完成信息："
+        echo "  配置文件: /etc/supervisor/supervisord.conf"
+        echo "  程序配置目录: /etc/supervisor/conf.d/"
+        echo "  日志目录: /var/log/supervisor/"
+        echo "  Socket: /var/run/supervisor.sock"
+        echo ""
+        print_info "常用命令："
+        echo "  查看状态: supervisorctl status"
+        echo "  启动程序: supervisorctl start <name>"
+        echo "  停止程序: supervisorctl stop <name>"
+        echo "  重启程序: supervisorctl restart <name>"
+        echo "  重载配置: supervisorctl reread && supervisorctl update"
+        echo ""
+        print_info "管理程序："
+        echo "  可以使用主菜单中的 '容器和进程管理' 进行详细管理"
+    else
+        print_error "Supervisor 安装失败"
+    fi
+    
+    press_enter
+}
+
+
+# ============================================
 # 卸载服务
 # ============================================
 
@@ -1031,9 +1125,10 @@ uninstall_service() {
     echo "2. Nginx"
     echo "3. Caddy"
     echo "4. PHP 8.5"
+    echo "5. Supervisor"
     echo "0. 取消"
     echo ""
-    read -p "请选择 [0-4]: " choice
+    read -p "请选择 [0-5]: " choice
     
     case $choice in
         1)
@@ -1047,6 +1142,9 @@ uninstall_service() {
             ;;
         4)
             uninstall_php85
+            ;;
+        5)
+            uninstall_supervisor
             ;;
         0)
             print_info "已取消"
@@ -1197,6 +1295,42 @@ uninstall_php85() {
 }
 
 
+uninstall_supervisor() {
+    echo ""
+    print_warning "⚠️  警告: 即将卸载 Supervisor 及其所有配置"
+    echo ""
+    read -p "确认卸载？输入 'yes' 确认: " confirm
+    
+    if [ "$confirm" != "yes" ]; then
+        print_info "已取消"
+        press_enter
+        return
+    fi
+    
+    print_info "正在卸载 Supervisor..."
+    
+    # 停止服务
+    systemctl stop supervisor 2>/dev/null || true
+    systemctl disable supervisor 2>/dev/null || true
+    
+    # 卸载软件包
+    apt remove --purge -y supervisor
+    apt autoremove -y
+    
+    # 询问是否删除配置和日志
+    echo ""
+    read -p "是否删除配置文件和日志？[y/N]: " delete_data
+    if [[ "$delete_data" =~ ^[Yy]$ ]]; then
+        rm -rf /etc/supervisor
+        rm -rf /var/log/supervisor
+        print_success "配置和日志已删除"
+    fi
+    
+    print_success "Supervisor 已卸载"
+    press_enter
+}
+
+
 # ============================================
 # 查看服务状态
 # ============================================
@@ -1243,6 +1377,22 @@ view_services_status() {
         # 显示 OPcache 状态
         if php8.5 -m | grep -qi opcache; then
             print_success "  OPcache: 已内置 ✓"
+        fi
+        echo ""
+    fi
+    
+    # Supervisor
+    if command -v supervisorctl &> /dev/null; then
+        echo -e "${CYAN}Supervisor${NC}"
+        local version=$(supervisorctl version 2>/dev/null)
+        echo "  版本: ${version}"
+        if systemctl is-active --quiet supervisor; then
+            print_success "  状态: 运行中"
+            local running_programs=$(supervisorctl status 2>/dev/null | grep RUNNING | wc -l)
+            local total_programs=$(supervisorctl status 2>/dev/null | wc -l)
+            echo "  程序: ${running_programs} 运行中 / ${total_programs} 总计"
+        else
+            print_error "  状态: 已停止"
         fi
         echo ""
     fi
@@ -1295,12 +1445,13 @@ show_webserver_menu() {
     echo ""
     echo "4. 🐘 安装 PHP 8.5"
     echo "5. 📦 安装 NVM (Node.js 版本管理)"
+    echo "6. 🔧 安装 Supervisor (进程管理)"
     echo ""
     
     echo "【管理工具】"
     echo ""
-    echo "6. 📊 查看服务状态"
-    echo "7. 🗑️  卸载服务"
+    echo "7. 📊 查看服务状态"
+    echo "8. 🗑️  卸载服务"
     echo ""
     
     echo "0. 返回主菜单"
@@ -1311,7 +1462,7 @@ show_webserver_menu() {
 webserver_menu() {
     while true; do
         show_webserver_menu
-        read -p "请选择 [0-7]: " choice
+        read -p "请选择 [0-8]: " choice
         
         case $choice in
             1)
@@ -1330,9 +1481,12 @@ webserver_menu() {
                 install_nvm
                 ;;
             6)
-                view_services_status
+                install_supervisor
                 ;;
             7)
+                view_services_status
+                ;;
+            8)
                 uninstall_service
                 ;;
             0)
