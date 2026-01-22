@@ -12,7 +12,7 @@ set -euo pipefail
 
 # 配置变量
 WEB_ROOT="/var/www"
-PHP_VERSION="8.2"
+PHP_VERSION="8.5"
 PHP_SOCK="/run/php/php${PHP_VERSION}-fpm.sock"
 BACKUP_DIR="/root/web_backups"
 
