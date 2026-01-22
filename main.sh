@@ -57,12 +57,16 @@ print_info() {
 run_subscript() {
     local script_name=$1
     local script_url="${BASE_URL}/scripts/${script_name}.sh"
-    
+    local cache_bust="t=$(date +%s)"
+
     echo ""
     print_info "正在加载模块: ${script_name}..."
-    
-    # 直接执行，不捕获退出码
-    bash <(curl -fsSL "$script_url") || {
+
+    bash <(curl -fsSL \
+      -H 'Cache-Control: no-cache' \
+      -H 'Pragma: no-cache' \
+      "${script_url}?${cache_bust}") || {
+
         echo ""
         print_error "模块加载失败"
         print_warning "可能的原因："
@@ -73,7 +77,7 @@ run_subscript() {
         read -p "按 Enter 键继续..."
         return 1
     }
-    
+
     return 0
 }
 
