@@ -1,9 +1,11 @@
 #!/bin/bash
 
+
 # ============================================
 # 数据库管理脚本
 # 支持 PostgreSQL 和 MySQL/MariaDB
 # ============================================
+
 
 # 颜色定义
 RED='\033[0;31m'
@@ -13,34 +15,42 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
+
 # ============================================
 # 公共函数
 # ============================================
+
 
 print_success() {
     echo -e "${GREEN}✓${NC} $1"
 }
 
+
 print_error() {
     echo -e "${RED}✗${NC} $1"
 }
+
 
 print_warning() {
     echo -e "${YELLOW}⚠${NC} $1"
 }
 
+
 print_info() {
     echo -e "${BLUE}ℹ${NC} $1"
 }
+
 
 press_enter() {
     echo ""
     read -p "按 Enter 键继续..."
 }
 
+
 # ============================================
 # PostgreSQL 管理函数
 # ============================================
+
 
 # 检查 PostgreSQL 是否安装
 check_postgresql() {
@@ -50,6 +60,154 @@ check_postgresql() {
         return 1
     fi
 }
+
+
+# 检查 PostgreSQL APT 源是否已配置
+check_pgdg_repo() {
+    if [ -f "/etc/apt/sources.list.d/pgdg.list" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+
+# 配置 PostgreSQL 官方 APT 源
+setup_pgdg_repo() {
+    clear
+    echo "=========================================="
+    echo "   配置 PostgreSQL 官方 APT 源"
+    echo "=========================================="
+    echo ""
+    
+    if check_pgdg_repo; then
+        print_warning "PostgreSQL 官方源已配置"
+        cat /etc/apt/sources.list.d/pgdg.list
+        echo ""
+        read -p "是否重新配置？[y/N]: " reconfig
+        if [[ ! "$reconfig" =~ ^[Yy]$ ]]; then
+            return
+        fi
+    fi
+    
+    print_info "选择配置方式："
+    echo ""
+    echo "1. 自动配置（推荐）"
+    echo "2. 手动配置"
+    echo "0. 取消"
+    echo ""
+    read -p "请选择 [0-2]: " method
+    
+    case $method in
+        1)
+            setup_pgdg_repo_auto
+            ;;
+        2)
+            setup_pgdg_repo_manual
+            ;;
+        0)
+            return
+            ;;
+        *)
+            print_error "无效选择"
+            press_enter
+            return
+            ;;
+    esac
+}
+
+
+# 自动配置 PostgreSQL 官方源
+setup_pgdg_repo_auto() {
+    echo ""
+    print_info "使用自动配置脚本..."
+    echo ""
+    
+    # 安装依赖
+    echo "[步骤 1/3] 安装依赖..."
+    sudo apt update
+    sudo apt install -y postgresql-common ca-certificates
+    print_success "依赖安装完成"
+    
+    # 运行官方配置脚本
+    echo ""
+    echo "[步骤 2/3] 运行官方配置脚本..."
+    if [ -f "/usr/share/postgresql-common/pgdg/apt.postgresql.org.sh" ]; then
+        sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+        print_success "APT 源配置完成"
+    else
+        print_error "配置脚本不存在"
+        print_info "尝试手动配置..."
+        setup_pgdg_repo_manual
+        return
+    fi
+    
+    # 更新软件包列表
+    echo ""
+    echo "[步骤 3/3] 更新软件包列表..."
+    sudo apt update
+    print_success "软件包列表已更新"
+    
+    echo ""
+    print_success "PostgreSQL 官方源配置完成！"
+    echo ""
+    print_info "配置文件: /etc/apt/sources.list.d/pgdg.list"
+    
+    press_enter
+}
+
+
+# 手动配置 PostgreSQL 官方源
+setup_pgdg_repo_manual() {
+    echo ""
+    print_info "使用手动配置..."
+    echo ""
+    
+    # 安装依赖
+    echo "[步骤 1/4] 安装依赖..."
+    sudo apt update
+    sudo apt install -y curl ca-certificates lsb-release
+    print_success "依赖安装完成"
+    
+    # 下载并导入 GPG 密钥
+    echo ""
+    echo "[步骤 2/4] 导入 GPG 密钥..."
+    sudo install -d /usr/share/postgresql-common/pgdg
+    sudo curl -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc --fail https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    
+    if [ $? -eq 0 ]; then
+        print_success "GPG 密钥导入完成"
+    else
+        print_error "GPG 密钥导入失败"
+        press_enter
+        return 1
+    fi
+    
+    # 创建 APT 源配置文件
+    echo ""
+    echo "[步骤 3/4] 创建 APT 源配置..."
+    
+    CODENAME=$(lsb_release -cs)
+    
+    sudo sh -c "echo 'deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${CODENAME}-pgdg main' > /etc/apt/sources.list.d/pgdg.list"
+    
+    print_success "APT 源配置完成"
+    echo ""
+    print_info "配置文件内容："
+    cat /etc/apt/sources.list.d/pgdg.list
+    
+    # 更新软件包列表
+    echo ""
+    echo "[步骤 4/4] 更新软件包列表..."
+    sudo apt update
+    print_success "软件包列表已更新"
+    
+    echo ""
+    print_success "PostgreSQL 官方源配置完成！"
+    
+    press_enter
+}
+
 
 # 安装 PostgreSQL
 install_postgresql() {
@@ -62,28 +220,107 @@ install_postgresql() {
     if check_postgresql; then
         print_warning "PostgreSQL 已安装"
         psql --version
-        press_enter
-        return
+        echo ""
+        read -p "是否继续安装其他版本？[y/N]: " continue_install
+        if [[ ! "$continue_install" =~ ^[Yy]$ ]]; then
+            press_enter
+            return
+        fi
     fi
     
-    print_info "正在安装 PostgreSQL..."
+    # 检查是否配置了 PGDG 源
+    if ! check_pgdg_repo; then
+        print_warning "未检测到 PostgreSQL 官方 APT 源"
+        echo ""
+        read -p "是否现在配置？[Y/n]: " setup_repo
+        
+        if [[ ! "$setup_repo" =~ ^[Nn]$ ]]; then
+            setup_pgdg_repo
+        else
+            print_info "将从系统默认源安装 PostgreSQL"
+        fi
+    else
+        print_success "已配置 PostgreSQL 官方源"
+    fi
+    
+    echo ""
+    print_info "选择要安装的版本："
+    echo ""
+    echo "1. PostgreSQL 18 (最新稳定版)"
+    echo "2. PostgreSQL 17"
+    echo "3. PostgreSQL 16"
+    echo "4. PostgreSQL 15"
+    echo "5. PostgreSQL 14"
+    echo "6. 系统默认版本"
+    echo "7. 自定义版本"
+    echo "0. 取消"
     echo ""
     
+    read -p "请选择 [0-7]: " version_choice
+    
+    case $version_choice in
+        1)
+            PG_VERSION="18"
+            ;;
+        2)
+            PG_VERSION="17"
+            ;;
+        3)
+            PG_VERSION="16"
+            ;;
+        4)
+            PG_VERSION="15"
+            ;;
+        5)
+            PG_VERSION="14"
+            ;;
+        6)
+            PG_VERSION=""
+            ;;
+        7)
+            read -p "请输入版本号 (如: 18): " PG_VERSION
+            ;;
+        0)
+            return
+            ;;
+        *)
+            print_error "无效选择"
+            press_enter
+            return
+            ;;
+    esac
+    
+    echo ""
+    print_info "正在安装 PostgreSQL ${PG_VERSION:-默认版本}..."
+    echo ""
+    
+    # 更新软件包列表
     sudo apt update
-    sudo apt install -y postgresql postgresql-contrib
+    
+    # 安装 PostgreSQL
+    if [ -n "$PG_VERSION" ]; then
+        sudo apt install -y postgresql-${PG_VERSION} postgresql-contrib-${PG_VERSION}
+    else
+        sudo apt install -y postgresql postgresql-contrib
+    fi
     
     if [ $? -eq 0 ]; then
         print_success "PostgreSQL 安装成功"
         echo ""
         print_info "PostgreSQL 版本: $(psql --version)"
+        echo ""
         print_info "PostgreSQL 服务状态:"
-        sudo systemctl status postgresql --no-pager -l
+        sudo systemctl status postgresql --no-pager -l | head -10
+        echo ""
+        print_info "默认数据目录: /var/lib/postgresql/${PG_VERSION:-$(psql --version | grep -oP '\d+' | head -1)}/main"
+        print_info "默认配置目录: /etc/postgresql/${PG_VERSION:-$(psql --version | grep -oP '\d+' | head -1)}/main"
     else
         print_error "PostgreSQL 安装失败"
     fi
     
     press_enter
 }
+
 
 # 创建 PostgreSQL 数据库
 create_postgresql_database() {
@@ -144,6 +381,7 @@ EOF
     press_enter
 }
 
+
 # 列出 PostgreSQL 数据库
 list_postgresql_databases() {
     clear
@@ -160,6 +398,7 @@ list_postgresql_databases() {
     
     press_enter
 }
+
 
 # 备份 PostgreSQL 数据库
 backup_postgresql_database() {
@@ -205,6 +444,7 @@ backup_postgresql_database() {
     
     press_enter
 }
+
 
 # 恢复 PostgreSQL 数据库
 restore_postgresql_database() {
@@ -268,6 +508,7 @@ restore_postgresql_database() {
     press_enter
 }
 
+
 # 删除 PostgreSQL 数据库
 delete_postgresql_database() {
     clear
@@ -309,6 +550,7 @@ delete_postgresql_database() {
     
     press_enter
 }
+
 
 # PostgreSQL 服务管理
 manage_postgresql_service() {
@@ -356,6 +598,7 @@ manage_postgresql_service() {
     press_enter
 }
 
+
 # PostgreSQL 子菜单
 postgresql_menu() {
     while true; do
@@ -365,8 +608,15 @@ postgresql_menu() {
         echo "=========================================="
         echo ""
         
+        # 显示 PGDG 源状态
+        if check_pgdg_repo; then
+            print_success "PostgreSQL 官方源: 已配置"
+        else
+            echo -e "${YELLOW}○${NC} PostgreSQL 官方源: 未配置"
+        fi
+        
         if check_postgresql; then
-            print_success "PostgreSQL 已安装"
+            print_success "PostgreSQL: 已安装"
             pg_version=$(sudo -u postgres psql -V | awk '{print $3}')
             echo "  版本: ${pg_version}"
             
@@ -377,39 +627,43 @@ postgresql_menu() {
                 print_error "服务状态: 已停止"
             fi
         else
-            print_warning "PostgreSQL 未安装"
+            print_warning "PostgreSQL: 未安装"
         fi
         
         echo ""
-        echo "1. 安装 PostgreSQL"
-        echo "2. 创建数据库"
-        echo "3. 列出数据库"
-        echo "4. 备份数据库"
-        echo "5. 恢复数据库"
-        echo "6. 删除数据库"
-        echo "7. 服务管理"
+        echo "1. 配置 PostgreSQL 官方 APT 源"
+        echo "2. 安装 PostgreSQL"
+        echo "3. 创建数据库"
+        echo "4. 列出数据库"
+        echo "5. 备份数据库"
+        echo "6. 恢复数据库"
+        echo "7. 删除数据库"
+        echo "8. 服务管理"
         echo "0. 返回上级菜单"
         echo ""
         
-        read -p "请选择 [0-7]: " choice
+        read -p "请选择 [0-8]: " choice
         
         case $choice in
-            1) install_postgresql ;;
-            2) create_postgresql_database ;;
-            3) list_postgresql_databases ;;
-            4) backup_postgresql_database ;;
-            5) restore_postgresql_database ;;
-            6) delete_postgresql_database ;;
-            7) manage_postgresql_service ;;
+            1) setup_pgdg_repo ;;
+            2) install_postgresql ;;
+            3) create_postgresql_database ;;
+            4) list_postgresql_databases ;;
+            5) backup_postgresql_database ;;
+            6) restore_postgresql_database ;;
+            7) delete_postgresql_database ;;
+            8) manage_postgresql_service ;;
             0) return ;;
             *) print_error "无效选择"; sleep 1 ;;
         esac
     done
 }
 
+
 # ============================================
 # MySQL/MariaDB 管理函数
 # ============================================
+
 
 # 检查 MySQL 是否安装
 check_mysql() {
@@ -419,6 +673,7 @@ check_mysql() {
         return 1
     fi
 }
+
 
 # 安装 MySQL
 install_mysql() {
@@ -474,6 +729,7 @@ install_mysql() {
     
     press_enter
 }
+
 
 # 创建 MySQL 数据库
 create_mysql_database() {
@@ -533,6 +789,7 @@ EOF
     press_enter
 }
 
+
 # 列出 MySQL 数据库
 list_mysql_databases() {
     clear
@@ -549,6 +806,7 @@ list_mysql_databases() {
     
     press_enter
 }
+
 
 # 备份 MySQL 数据库
 backup_mysql_database() {
@@ -598,6 +856,7 @@ backup_mysql_database() {
     
     press_enter
 }
+
 
 # 恢复 MySQL 数据库
 restore_mysql_database() {
@@ -664,6 +923,7 @@ restore_mysql_database() {
     press_enter
 }
 
+
 # 删除 MySQL 数据库
 delete_mysql_database() {
     clear
@@ -705,6 +965,7 @@ delete_mysql_database() {
     
     press_enter
 }
+
 
 # MySQL 服务管理
 manage_mysql_service() {
@@ -752,6 +1013,7 @@ manage_mysql_service() {
     
     press_enter
 }
+
 
 # MySQL 子菜单
 mysql_menu() {
@@ -804,9 +1066,11 @@ mysql_menu() {
     done
 }
 
+
 # ============================================
 # 主菜单
 # ============================================
+
 
 main_menu() {
     while true; do
@@ -846,6 +1110,7 @@ main_menu() {
         esac
     done
 }
+
 
 # 启动主菜单
 main_menu
