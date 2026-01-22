@@ -1,9 +1,12 @@
 #!/bin/bash
+set -euo pipefail
+
 
 # ============================================
 # Web 服务器管理脚本
-# 支持 OpenResty、Nginx 和 Caddy
+# 支持 OpenResty、Nginx、Caddy、PHP 8.5、NVM
 # ============================================
+
 
 # 颜色定义
 RED='\033[0;31m'
@@ -11,47 +14,39 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
 NC='\033[0m'
 
-# ============================================
-# 公共函数
-# ============================================
 
-print_success() {
-    echo -e "${GREEN}✓${NC} $1"
-}
+print_success() { echo -e "${GREEN}✓${NC} $1"; }
+print_error() { echo -e "${RED}✗${NC} $1"; }
+print_warning() { echo -e "${YELLOW}⚠${NC} $1"; }
+print_info() { echo -e "${BLUE}ℹ${NC} $1"; }
 
-print_error() {
-    echo -e "${RED}✗${NC} $1"
-}
-
-print_warning() {
-    echo -e "${YELLOW}⚠${NC} $1"
-}
-
-print_info() {
-    echo -e "${BLUE}ℹ${NC} $1"
-}
 
 press_enter() {
     echo ""
     read -p "按 Enter 键继续..."
 }
 
-# ============================================
-# OpenResty 管理函数
-# ============================================
 
-# 检查 OpenResty 是否安装
-check_openresty() {
-    if [ -f /usr/local/openresty/nginx/sbin/nginx ]; then
-        return 0
-    else
+# 检查 root 权限
+check_root() {
+    if [ "$EUID" -ne 0 ]; then
+        print_error "此功能需要 root 权限"
+        print_info "请使用 sudo 运行主脚本"
+        press_enter
         return 1
     fi
+    return 0
 }
 
+
+# ============================================
 # 安装 OpenResty
+# ============================================
+
+
 install_openresty() {
     clear
     echo "=========================================="
@@ -59,487 +54,203 @@ install_openresty() {
     echo "=========================================="
     echo ""
     
-    if check_openresty; then
-        print_warning "OpenResty 已安装"
-        /usr/local/openresty/nginx/sbin/nginx -v
-        press_enter
-        return
-    fi
+    check_root || return
     
-    print_info "正在安装依赖..."
-    echo ""
-    
-    sudo apt update
-    sudo apt install -y wget gnupg ca-certificates lsb-release
-    
-    # 添加 OpenResty APT 仓库
-    print_info "添加 OpenResty 仓库..."
-    wget -O - https://openresty.org/package/pubkey.gpg | sudo gpg --dearmor -o /usr/share/keyrings/openresty.gpg
-    
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/debian $(lsb_release -sc) openresty" | \
-        sudo tee /etc/apt/sources.list.d/openresty.list
-    
-    # 安装 OpenResty
-    print_info "正在安装 OpenResty..."
-    sudo apt update
-    sudo apt install -y openresty
-    
-    if [ $? -eq 0 ]; then
-        print_success "OpenResty 安装成功"
+    if command -v openresty &> /dev/null; then
+        local version=$(openresty -v 2>&1 | grep -oP 'openresty/\K[0-9.]+')
+        print_warning "OpenResty 已安装 (版本: $version)"
         echo ""
-        /usr/local/openresty/nginx/sbin/nginx -v
-        
-        # 检查服务是否已存在
-        if systemctl list-unit-files | grep -q openresty.service; then
-            print_success "systemd 服务已自动创建"
-        else
-            print_warning "未检测到 systemd 服务，尝试手动创建..."
-            create_openresty_service
+        read -p "是否重新安装？[y/N]: " reinstall
+        if [[ ! "$reinstall" =~ ^[Yy]$ ]]; then
+            press_enter
+            return
         fi
-        
-        # 启动服务
-        sudo systemctl start openresty
-        sudo systemctl enable openresty
-        
-        print_success "OpenResty 服务已启动并设置为开机自启"
-        
-        # 显示服务状态
-        echo ""
-        print_info "服务状态："
-        sudo systemctl status openresty --no-pager -l | head -n 10
-    else
-        print_error "OpenResty 安装失败"
     fi
     
-    press_enter
-}
-
-# 创建 OpenResty systemd 服务（备用方案）
-create_openresty_service() {
-    print_info "创建 systemd 服务..."
-    
-    sudo tee /etc/systemd/system/openresty.service > /dev/null << 'EOF'
-[Unit]
-Description=OpenResty Web Server
-Documentation=https://openresty.org/
-After=network.target
-
-[Service]
-Type=forking
-PIDFile=/usr/local/openresty/nginx/logs/nginx.pid
-ExecStartPre=/usr/local/openresty/nginx/sbin/nginx -t
-ExecStart=/usr/local/openresty/nginx/sbin/nginx
-ExecReload=/bin/kill -s HUP $MAINPID
-ExecStop=/bin/kill -s QUIT $MAINPID
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    
-    sudo systemctl daemon-reload
-    print_success "systemd 服务已创建"
-}
-
-# 创建 OpenResty 站点配置
-create_openresty_site() {
-    clear
-    echo "=========================================="
-    echo "   创建 OpenResty 站点"
-    echo "=========================================="
+    print_info "开始安装 OpenResty..."
     echo ""
     
-    read -p "站点域名 (例如: example.com): " domain
-    if [ -z "$domain" ]; then
-        print_error "域名不能为空"
-        press_enter
-        return
+    # 安装依赖
+    print_info "[1/5] 安装依赖包..."
+    apt update
+    apt install -y gnupg2 ca-certificates lsb-release debian-archive-keyring
+    
+    # 添加 GPG 密钥
+    print_info "[2/5] 添加 OpenResty GPG 密钥..."
+    wget -qO - https://openresty.org/package/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/openresty.gpg
+    
+    # 添加仓库
+    print_info "[3/5] 添加 OpenResty 仓库..."
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/openresty.gpg] http://openresty.org/package/debian $(lsb_release -sc) openresty" \
+        > /etc/apt/sources.list.d/openresty.list
+    
+    # 更新并安装
+    print_info "[4/5] 安装 OpenResty..."
+    apt update
+    apt install -y openresty
+    
+    # 配置 OpenResty
+    print_info "[5/5] 配置 OpenResty..."
+    
+    local or_base="/usr/local/openresty/nginx"
+    local conf_dir="${or_base}/conf"
+    local sites_avail="${conf_dir}/sites-available"
+    local sites_enabled="${conf_dir}/sites-enabled"
+    local ssl_dir="${conf_dir}/ssl"
+    
+    # 创建目录结构
+    mkdir -p "$sites_avail" "$sites_enabled" "$ssl_dir" "${or_base}/logs"
+    chown -R www-data:www-data "${or_base}/logs" 2>/dev/null || true
+    
+    # 创建临时目录
+    for temp_dir in client_body proxy fastcgi uwsgi scgi; do
+        mkdir -p "${or_base}/${temp_dir}_temp"
+        chown -R www-data:www-data "${or_base}/${temp_dir}_temp"
+    done
+    
+    # 备份原配置
+    if [ -f "${conf_dir}/nginx.conf" ]; then
+        cp "${conf_dir}/nginx.conf" "${conf_dir}/nginx.conf.bak.$(date +%Y%m%d_%H%M%S)"
     fi
     
-    read -p "网站根目录 (默认: /var/www/${domain}): " webroot
-    webroot=${webroot:-/var/www/${domain}}
+    # 创建主配置
+    cat > "${conf_dir}/nginx.conf" << 'NGXCONF'
+user www-data;
+worker_processes auto;
+worker_rlimit_nofile 65535;
+pcre_jit on;
+pid logs/nginx.pid;
+error_log logs/error.log warn;
+
+events {
+    worker_connections 1024;
+    use epoll;
+    multi_accept on;
+}
+
+http {
+    include mime.types;
+    default_type application/octet-stream;
     
-    read -p "监听端口 (默认: 80): " port
-    port=${port:-80}
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log logs/access.log main;
+    error_log logs/error.log;
+
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+    server_tokens off;
+
+    client_max_body_size 512M;
+    client_body_buffer_size 128k;
+
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css text/xml text/javascript 
+               application/json application/javascript application/xml+rss;
+
+    include sites-enabled/*.conf;
+}
+NGXCONF
     
-    # 创建网站目录
-    sudo mkdir -p "$webroot"
-    sudo chown -R www-data:www-data "$webroot"
-    
-    # 创建默认 index.html
-    sudo tee "$webroot/index.html" > /dev/null << EOF
+    # 创建默认站点
+    mkdir -p /var/www/html
+    cat > /var/www/html/index.html << 'WELCOME'
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Welcome to ${domain}</title>
+    <meta charset="utf-8">
+    <title>OpenResty 欢迎页</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 50px; }
-        h1 { color: #333; }
+        body { font-family: Arial; margin: 50px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #0066cc; }
+        .info { background: #f0f0f0; padding: 20px; border-radius: 5px; margin: 20px 0; }
+        .info p { margin: 10px 0; }
+        code { background: #e8e8e8; padding: 2px 6px; border-radius: 3px; }
     </style>
 </head>
 <body>
-    <h1>Welcome to ${domain}</h1>
-    <p>This site is powered by OpenResty.</p>
+    <div class="container">
+        <h1>🎉 OpenResty 安装成功！</h1>
+        <div class="info">
+            <p><strong>配置目录：</strong><code>/usr/local/openresty/nginx/conf</code></p>
+            <p><strong>站点目录：</strong><code>/var/www</code></p>
+            <p><strong>日志目录：</strong><code>/usr/local/openresty/nginx/logs</code></p>
+            <p><strong>虚拟主机：</strong><code>/usr/local/openresty/nginx/conf/sites-available</code></p>
+        </div>
+        <h2>管理命令</h2>
+        <ul>
+            <li>启动: <code>systemctl start openresty</code></li>
+            <li>停止: <code>systemctl stop openresty</code></li>
+            <li>重启: <code>systemctl restart openresty</code></li>
+            <li>重载: <code>systemctl reload openresty</code></li>
+            <li>状态: <code>systemctl status openresty</code></li>
+        </ul>
+    </div>
 </body>
 </html>
-EOF
+WELCOME
     
-    # 创建配置文件目录
-    sudo mkdir -p /usr/local/openresty/nginx/conf/sites-available
-    sudo mkdir -p /usr/local/openresty/nginx/conf/sites-enabled
+    chown -R www-data:www-data /var/www/html
     
-    # 创建站点配置
-    local config_file="/usr/local/openresty/nginx/conf/sites-available/${domain}.conf"
-    
-    sudo tee "$config_file" > /dev/null << EOF
+    # 创建默认虚拟主机
+    cat > "${sites_avail}/default.conf" << 'DEFCONF'
 server {
-    listen ${port};
-    server_name ${domain} www.${domain};
-    
-    root ${webroot};
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    root /var/www/html;
     index index.html index.htm;
-    
-    access_log /usr/local/openresty/nginx/logs/${domain}-access.log;
-    error_log /usr/local/openresty/nginx/logs/${domain}-error.log;
-    
+
     location / {
-        try_files \$uri \$uri/ =404;
-    }
-    
-    # 静态文件缓存
-    location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
-        expires 7d;
-        add_header Cache-Control "public, immutable";
-    }
-    
-    # 禁止访问隐藏文件
-    location ~ /\. {
-        deny all;
+        try_files $uri $uri/ =404;
     }
 }
-EOF
+DEFCONF
     
-    # 创建软链接启用站点
-    sudo ln -sf "$config_file" "/usr/local/openresty/nginx/conf/sites-enabled/${domain}.conf"
-    
-    # 更新主配置文件包含站点配置
-    if ! grep -q "sites-enabled" /usr/local/openresty/nginx/conf/nginx.conf; then
-        sudo sed -i '/http {/a \    include /usr/local/openresty/nginx/conf/sites-enabled/*.conf;' \
-            /usr/local/openresty/nginx/conf/nginx.conf
-    fi
+    ln -sf "${sites_avail}/default.conf" "${sites_enabled}/"
     
     # 测试配置
-    if sudo /usr/local/openresty/nginx/sbin/nginx -t; then
-        sudo systemctl reload openresty
-        print_success "站点创建成功"
-        echo ""
-        echo "站点信息："
-        echo "  域名: ${domain}"
-        echo "  根目录: ${webroot}"
-        echo "  端口: ${port}"
-        echo "  配置文件: ${config_file}"
-        echo ""
-        print_info "请确保域名已解析到服务器IP"
+    if openresty -t; then
+        print_success "配置测试通过"
     else
-        print_error "配置文件有误"
-        sudo rm -f "/usr/local/openresty/nginx/conf/sites-enabled/${domain}.conf"
-    fi
-    
-    press_enter
-}
-
-# 列出 OpenResty 站点
-list_openresty_sites() {
-    clear
-    echo "=========================================="
-    echo "   OpenResty 站点列表"
-    echo "=========================================="
-    echo ""
-    
-    local sites_dir="/usr/local/openresty/nginx/conf/sites-enabled"
-    
-    if [ ! -d "$sites_dir" ] || [ -z "$(ls -A $sites_dir 2>/dev/null)" ]; then
-        print_warning "没有已启用的站点"
+        print_error "配置测试失败"
         press_enter
         return
     fi
     
-    print_info "已启用的站点："
-    echo ""
+    # 启动服务
+    systemctl enable openresty
+    systemctl restart openresty
     
-    for conf in "$sites_dir"/*.conf; do
-        if [ -f "$conf" ]; then
-            local domain=$(basename "$conf" .conf)
-            local port=$(grep -m 1 "listen" "$conf" | awk '{print $2}' | tr -d ';')
-            local root=$(grep "root" "$conf" | awk '{print $2}' | tr -d ';')
-            
-            echo -e "${GREEN}●${NC} ${domain}"
-            echo "   端口: ${port}"
-            echo "   根目录: ${root}"
-            echo ""
-        fi
-    done
+    echo ""
+    print_success "OpenResty 安装完成！"
+    echo ""
+    print_info "安装信息："
+    echo "  版本: $(openresty -v 2>&1 | grep -oP 'openresty/\K[0-9.]+')"
+    echo "  配置: ${conf_dir}/nginx.conf"
+    echo "  站点: ${sites_avail}"
+    echo "  日志: ${or_base}/logs"
+    echo ""
+    print_info "访问 http://localhost 查看默认页面"
     
     press_enter
 }
 
-# 删除 OpenResty 站点
-delete_openresty_site() {
-    clear
-    echo "=========================================="
-    echo "   删除 OpenResty 站点"
-    echo "=========================================="
-    echo ""
-    
-    local sites_dir="/usr/local/openresty/nginx/conf/sites-enabled"
-    
-    if [ ! -d "$sites_dir" ] || [ -z "$(ls -A $sites_dir 2>/dev/null)" ]; then
-        print_warning "没有可删除的站点"
-        press_enter
-        return
-    fi
-    
-    print_info "已启用的站点："
-    echo ""
-    
-    local i=1
-    declare -A site_map
-    
-    for conf in "$sites_dir"/*.conf; do
-        if [ -f "$conf" ]; then
-            local domain=$(basename "$conf" .conf)
-            echo "${i}. ${domain}"
-            site_map[$i]="$domain"
-            ((i++))
-        fi
-    done
-    
-    echo ""
-    read -p "选择要删除的站点编号: " choice
-    
-    local selected_domain="${site_map[$choice]}"
-    
-    if [ -z "$selected_domain" ]; then
-        print_error "无效选择"
-        press_enter
-        return
-    fi
-    
-    # 获取网站根目录
-    local webroot=$(grep "root" "/usr/local/openresty/nginx/conf/sites-available/${selected_domain}.conf" 2>/dev/null | awk '{print $2}' | tr -d ';')
-    
-    print_warning "警告：此操作将删除站点配置"
-    read -p "确认删除 ${selected_domain}？(yes/no): " confirm
-    
-    if [ "$confirm" != "yes" ]; then
-        print_info "已取消"
-        press_enter
-        return
-    fi
-    
-    # 删除配置文件
-    sudo rm -f "/usr/local/openresty/nginx/conf/sites-enabled/${selected_domain}.conf"
-    sudo rm -f "/usr/local/openresty/nginx/conf/sites-available/${selected_domain}.conf"
-    
-    # 重载配置
-    if sudo /usr/local/openresty/nginx/sbin/nginx -t; then
-        sudo systemctl reload openresty
-        print_success "站点已删除"
-        
-        echo ""
-        read -p "是否同时删除网站文件？(yes/no): " delete_files
-        if [ "$delete_files" = "yes" ] && [ -n "$webroot" ] && [ -d "$webroot" ]; then
-            sudo rm -rf "$webroot"
-            print_success "网站文件已删除"
-        fi
-    else
-        print_error "配置重载失败"
-    fi
-    
-    press_enter
-}
-
-# OpenResty 服务管理
-manage_openresty_service() {
-    clear
-    echo "=========================================="
-    echo "   OpenResty 服务管理"
-    echo "=========================================="
-    echo ""
-    
-    echo "1. 查看服务状态"
-    echo "2. 启动服务"
-    echo "3. 停止服务"
-    echo "4. 重启服务"
-    echo "5. 重载配置"
-    echo "6. 测试配置"
-    echo "0. 返回"
-    echo ""
-    
-    read -p "请选择 [0-6]: " choice
-    
-    case $choice in
-        1)
-            sudo systemctl status openresty --no-pager -l
-            ;;
-        2)
-            sudo systemctl start openresty
-            print_success "OpenResty 服务已启动"
-            ;;
-        3)
-            sudo systemctl stop openresty
-            print_success "OpenResty 服务已停止"
-            ;;
-        4)
-            sudo systemctl restart openresty
-            print_success "OpenResty 服务已重启"
-            ;;
-        5)
-            if sudo /usr/local/openresty/nginx/sbin/nginx -t; then
-                sudo systemctl reload openresty
-                print_success "配置已重载"
-            else
-                print_error "配置测试失败，未重载"
-            fi
-            ;;
-        6)
-            sudo /usr/local/openresty/nginx/sbin/nginx -t
-            ;;
-        0)
-            return
-            ;;
-    esac
-    
-    press_enter
-}
-
-# 查看 OpenResty 日志
-view_openresty_logs() {
-    clear
-    echo "=========================================="
-    echo "   OpenResty 日志查看"
-    echo "=========================================="
-    echo ""
-    
-    echo "1. 访问日志 (access.log)"
-    echo "2. 错误日志 (error.log)"
-    echo "3. 站点访问日志"
-    echo "4. 站点错误日志"
-    echo "0. 返回"
-    echo ""
-    
-    read -p "请选择 [0-4]: " choice
-    
-    local log_dir="/usr/local/openresty/nginx/logs"
-    
-    case $choice in
-        1)
-            echo ""
-            print_info "最近100行访问日志："
-            echo ""
-            sudo tail -n 100 "$log_dir/access.log"
-            ;;
-        2)
-            echo ""
-            print_info "最近100行错误日志："
-            echo ""
-            sudo tail -n 100 "$log_dir/error.log"
-            ;;
-        3)
-            echo ""
-            print_info "可用的站点日志："
-            ls -1 "$log_dir"/*-access.log 2>/dev/null | xargs -n 1 basename
-            echo ""
-            read -p "输入站点名称: " site
-            if [ -f "$log_dir/${site}-access.log" ]; then
-                sudo tail -n 100 "$log_dir/${site}-access.log"
-            else
-                print_error "日志文件不存在"
-            fi
-            ;;
-        4)
-            echo ""
-            print_info "可用的站点日志："
-            ls -1 "$log_dir"/*-error.log 2>/dev/null | xargs -n 1 basename
-            echo ""
-            read -p "输入站点名称: " site
-            if [ -f "$log_dir/${site}-error.log" ]; then
-                sudo tail -n 100 "$log_dir/${site}-error.log"
-            else
-                print_error "日志文件不存在"
-            fi
-            ;;
-        0)
-            return
-            ;;
-    esac
-    
-    press_enter
-}
-
-# OpenResty 子菜单
-openresty_menu() {
-    while true; do
-        clear
-        echo "=========================================="
-        echo "   OpenResty 管理"
-        echo "=========================================="
-        echo ""
-        
-        if check_openresty; then
-            print_success "OpenResty 已安装"
-            openresty_version=$(/usr/local/openresty/nginx/sbin/nginx -v 2>&1 | awk -F'/' '{print $2}')
-            echo "  版本: ${openresty_version}"
-            
-            # 显示服务状态
-            if systemctl is-active --quiet openresty; then
-                print_success "服务状态: 运行中"
-            else
-                print_error "服务状态: 已停止"
-            fi
-        else
-            print_warning "OpenResty 未安装"
-        fi
-        
-        echo ""
-        echo "1. 安装 OpenResty"
-        echo "2. 创建站点"
-        echo "3. 列出站点"
-        echo "4. 删除站点"
-        echo "5. 服务管理"
-        echo "6. 查看日志"
-        echo "0. 返回上级菜单"
-        echo ""
-        
-        read -p "请选择 [0-6]: " choice
-        
-        case $choice in
-            1) install_openresty ;;
-            2) create_openresty_site ;;
-            3) list_openresty_sites ;;
-            4) delete_openresty_site ;;
-            5) manage_openresty_service ;;
-            6) view_openresty_logs ;;
-            0) return ;;
-            *) print_error "无效选择"; sleep 1 ;;
-        esac
-    done
-}
 
 # ============================================
-# Nginx 管理函数
-# ============================================
-
-# 检查 Nginx 是否安装
-check_nginx() {
-    if command -v nginx &> /dev/null; then
-        return 0
-    else
-        return 1
-    fi
-}
-
 # 安装 Nginx
+# ============================================
+
+
 install_nginx() {
     clear
     echo "=========================================="
@@ -547,431 +258,78 @@ install_nginx() {
     echo "=========================================="
     echo ""
     
-    if check_nginx; then
-        print_warning "Nginx 已安装"
-        nginx -v
-        press_enter
-        return
-    fi
+    check_root || return
     
-    print_info "正在安装 Nginx..."
-    echo ""
-    
-    sudo apt update
-    sudo apt install -y nginx
-    
-    if [ $? -eq 0 ]; then
-        print_success "Nginx 安装成功"
+    if command -v nginx &> /dev/null; then
+        local version=$(nginx -v 2>&1 | grep -oP 'nginx/\K[0-9.]+')
+        print_warning "Nginx 已安装 (版本: $version)"
         echo ""
-        nginx -v
-        
-        # 启动服务
-        sudo systemctl start nginx
-        sudo systemctl enable nginx
-        
-        print_success "Nginx 服务已启动并设置为开机自启"
-    else
-        print_error "Nginx 安装失败"
-    fi
-    
-    press_enter
-}
-
-# 创建 Nginx 站点
-create_nginx_site() {
-    clear
-    echo "=========================================="
-    echo "   创建 Nginx 站点"
-    echo "=========================================="
-    echo ""
-    
-    read -p "站点域名 (例如: example.com): " domain
-    if [ -z "$domain" ]; then
-        print_error "域名不能为空"
-        press_enter
-        return
-    fi
-    
-    read -p "网站根目录 (默认: /var/www/${domain}): " webroot
-    webroot=${webroot:-/var/www/${domain}}
-    
-    read -p "监听端口 (默认: 80): " port
-    port=${port:-80}
-    
-    # 创建网站目录
-    sudo mkdir -p "$webroot"
-    sudo chown -R www-data:www-data "$webroot"
-    
-    # 创建默认 index.html
-    sudo tee "$webroot/index.html" > /dev/null << EOF
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Welcome to ${domain}</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 50px; }
-        h1 { color: #333; }
-    </style>
-</head>
-<body>
-    <h1>Welcome to ${domain}</h1>
-    <p>This site is powered by Nginx.</p>
-</body>
-</html>
-EOF
-    
-    # 创建站点配置
-    local config_file="/etc/nginx/sites-available/${domain}"
-    
-    sudo tee "$config_file" > /dev/null << EOF
-server {
-    listen ${port};
-    server_name ${domain} www.${domain};
-    
-    root ${webroot};
-    index index.html index.htm index.php;
-    
-    access_log /var/log/nginx/${domain}-access.log;
-    error_log /var/log/nginx/${domain}-error.log;
-    
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
-    
-    # PHP 支持 (如需要，取消注释)
-    # location ~ \.php$ {
-    #     include snippets/fastcgi-php.conf;
-    #     fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
-    # }
-    
-    # 静态文件缓存
-    location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
-        expires 7d;
-        add_header Cache-Control "public, immutable";
-    }
-    
-    # 禁止访问隐藏文件
-    location ~ /\. {
-        deny all;
-    }
-}
-EOF
-    
-    # 创建软链接启用站点
-    sudo ln -sf "$config_file" "/etc/nginx/sites-enabled/${domain}"
-    
-    # 测试配置
-    if sudo nginx -t; then
-        sudo systemctl reload nginx
-        print_success "站点创建成功"
-        echo ""
-        echo "站点信息："
-        echo "  域名: ${domain}"
-        echo "  根目录: ${webroot}"
-        echo "  端口: ${port}"
-        echo "  配置文件: ${config_file}"
-        echo ""
-        print_info "请确保域名已解析到服务器IP"
-    else
-        print_error "配置文件有误"
-        sudo rm -f "/etc/nginx/sites-enabled/${domain}"
-    fi
-    
-    press_enter
-}
-
-# 列出 Nginx 站点
-list_nginx_sites() {
-    clear
-    echo "=========================================="
-    echo "   Nginx 站点列表"
-    echo "=========================================="
-    echo ""
-    
-    local sites_dir="/etc/nginx/sites-enabled"
-    
-    if [ ! -d "$sites_dir" ] || [ -z "$(ls -A $sites_dir 2>/dev/null)" ]; then
-        print_warning "没有已启用的站点"
-        press_enter
-        return
-    fi
-    
-    print_info "已启用的站点："
-    echo ""
-    
-    for conf in "$sites_dir"/*; do
-        if [ -f "$conf" ] && [ "$(basename $conf)" != "default" ]; then
-            local domain=$(basename "$conf")
-            local port=$(grep -m 1 "listen" "$conf" | awk '{print $2}' | tr -d ';')
-            local root=$(grep "root" "$conf" | awk '{print $2}' | tr -d ';')
-            
-            echo -e "${GREEN}●${NC} ${domain}"
-            echo "   端口: ${port}"
-            echo "   根目录: ${root}"
-            echo ""
-        fi
-    done
-    
-    press_enter
-}
-
-# 删除 Nginx 站点
-delete_nginx_site() {
-    clear
-    echo "=========================================="
-    echo "   删除 Nginx 站点"
-    echo "=========================================="
-    echo ""
-    
-    local sites_dir="/etc/nginx/sites-enabled"
-    
-    if [ ! -d "$sites_dir" ] || [ -z "$(ls -A $sites_dir 2>/dev/null)" ]; then
-        print_warning "没有可删除的站点"
-        press_enter
-        return
-    fi
-    
-    print_info "已启用的站点："
-    echo ""
-    
-    local i=1
-    declare -A site_map
-    
-    for conf in "$sites_dir"/*; do
-        if [ -f "$conf" ] && [ "$(basename $conf)" != "default" ]; then
-            local domain=$(basename "$conf")
-            echo "${i}. ${domain}"
-            site_map[$i]="$domain"
-            ((i++))
-        fi
-    done
-    
-    echo ""
-    read -p "选择要删除的站点编号: " choice
-    
-    local selected_domain="${site_map[$choice]}"
-    
-    if [ -z "$selected_domain" ]; then
-        print_error "无效选择"
-        press_enter
-        return
-    fi
-    
-    # 获取网站根目录
-    local webroot=$(grep "root" "/etc/nginx/sites-available/${selected_domain}" 2>/dev/null | awk '{print $2}' | tr -d ';')
-    
-    print_warning "警告：此操作将删除站点配置"
-    read -p "确认删除 ${selected_domain}？(yes/no): " confirm
-    
-    if [ "$confirm" != "yes" ]; then
-        print_info "已取消"
-        press_enter
-        return
-    fi
-    
-    # 删除配置文件
-    sudo rm -f "/etc/nginx/sites-enabled/${selected_domain}"
-    sudo rm -f "/etc/nginx/sites-available/${selected_domain}"
-    
-    # 重载配置
-    if sudo nginx -t; then
-        sudo systemctl reload nginx
-        print_success "站点已删除"
-        
-        echo ""
-        read -p "是否同时删除网站文件？(yes/no): " delete_files
-        if [ "$delete_files" = "yes" ] && [ -n "$webroot" ] && [ -d "$webroot" ]; then
-            sudo rm -rf "$webroot"
-            print_success "网站文件已删除"
-        fi
-    else
-        print_error "配置重载失败"
-    fi
-    
-    press_enter
-}
-
-# Nginx 服务管理
-manage_nginx_service() {
-    clear
-    echo "=========================================="
-    echo "   Nginx 服务管理"
-    echo "=========================================="
-    echo ""
-    
-    echo "1. 查看服务状态"
-    echo "2. 启动服务"
-    echo "3. 停止服务"
-    echo "4. 重启服务"
-    echo "5. 重载配置"
-    echo "6. 测试配置"
-    echo "0. 返回"
-    echo ""
-    
-    read -p "请选择 [0-6]: " choice
-    
-    case $choice in
-        1)
-            sudo systemctl status nginx --no-pager -l
-            ;;
-        2)
-            sudo systemctl start nginx
-            print_success "Nginx 服务已启动"
-            ;;
-        3)
-            sudo systemctl stop nginx
-            print_success "Nginx 服务已停止"
-            ;;
-        4)
-            sudo systemctl restart nginx
-            print_success "Nginx 服务已重启"
-            ;;
-        5)
-            if sudo nginx -t; then
-                sudo systemctl reload nginx
-                print_success "配置已重载"
-            else
-                print_error "配置测试失败，未重载"
-            fi
-            ;;
-        6)
-            sudo nginx -t
-            ;;
-        0)
+        read -p "是否重新安装？[y/N]: " reinstall
+        if [[ ! "$reinstall" =~ ^[Yy]$ ]]; then
+            press_enter
             return
-            ;;
-    esac
-    
-    press_enter
-}
-
-# 查看 Nginx 日志
-view_nginx_logs() {
-    clear
-    echo "=========================================="
-    echo "   Nginx 日志查看"
-    echo "=========================================="
-    echo ""
-    
-    echo "1. 访问日志 (access.log)"
-    echo "2. 错误日志 (error.log)"
-    echo "3. 站点访问日志"
-    echo "4. 站点错误日志"
-    echo "0. 返回"
-    echo ""
-    
-    read -p "请选择 [0-4]: " choice
-    
-    local log_dir="/var/log/nginx"
-    
-    case $choice in
-        1)
-            echo ""
-            print_info "最近100行访问日志："
-            echo ""
-            sudo tail -n 100 "$log_dir/access.log"
-            ;;
-        2)
-            echo ""
-            print_info "最近100行错误日志："
-            echo ""
-            sudo tail -n 100 "$log_dir/error.log"
-            ;;
-        3)
-            echo ""
-            print_info "可用的站点日志："
-            ls -1 "$log_dir"/*-access.log 2>/dev/null | xargs -n 1 basename
-            echo ""
-            read -p "输入站点名称: " site
-            if [ -f "$log_dir/${site}-access.log" ]; then
-                sudo tail -n 100 "$log_dir/${site}-access.log"
-            else
-                print_error "日志文件不存在"
-            fi
-            ;;
-        4)
-            echo ""
-            print_info "可用的站点日志："
-            ls -1 "$log_dir"/*-error.log 2>/dev/null | xargs -n 1 basename
-            echo ""
-            read -p "输入站点名称: " site
-            if [ -f "$log_dir/${site}-error.log" ]; then
-                sudo tail -n 100 "$log_dir/${site}-error.log"
-            else
-                print_error "日志文件不存在"
-            fi
-            ;;
-        0)
-            return
-            ;;
-    esac
-    
-    press_enter
-}
-
-# Nginx 子菜单
-nginx_menu() {
-    while true; do
-        clear
-        echo "=========================================="
-        echo "   Nginx 管理"
-        echo "=========================================="
-        echo ""
-        
-        if check_nginx; then
-            print_success "Nginx 已安装"
-            nginx_version=$(nginx -v 2>&1 | awk -F'/' '{print $2}')
-            echo "  版本: ${nginx_version}"
-            
-            # 显示服务状态
-            if systemctl is-active --quiet nginx; then
-                print_success "服务状态: 运行中"
-            else
-                print_error "服务状态: 已停止"
-            fi
-        else
-            print_warning "Nginx 未安装"
         fi
+    fi
+    
+    print_info "开始安装 Nginx..."
+    echo ""
+    
+    # 安装
+    print_info "[1/3] 安装 Nginx..."
+    apt update
+    apt install -y nginx
+    
+    # 配置
+    print_info "[2/3] 配置 Nginx..."
+    
+    local conf_dir="/etc/nginx"
+    local sites_avail="${conf_dir}/sites-available"
+    local sites_enabled="${conf_dir}/sites-enabled"
+    local ssl_dir="${conf_dir}/ssl"
+    
+    mkdir -p "$sites_avail" "$sites_enabled" "$ssl_dir"
+    
+    # 优化主配置
+    local nginx_conf="${conf_dir}/nginx.conf"
+    if [ -f "$nginx_conf" ]; then
+        cp "$nginx_conf" "${nginx_conf}.bak.$(date +%Y%m%d_%H%M%S)"
         
-        echo ""
-        echo "1. 安装 Nginx"
-        echo "2. 创建站点"
-        echo "3. 列出站点"
-        echo "4. 删除站点"
-        echo "5. 服务管理"
-        echo "6. 查看日志"
-        echo "0. 返回上级菜单"
-        echo ""
+        # 优化配置
+        sed -i 's/worker_processes.*/worker_processes auto;/' "$nginx_conf"
+        sed -i 's/# server_tokens off;/server_tokens off;/' "$nginx_conf"
+        sed -i 's/# gzip/gzip/' "$nginx_conf"
         
-        read -p "请选择 [0-6]: " choice
-        
-        case $choice in
-            1) install_nginx ;;
-            2) create_nginx_site ;;
-            3) list_nginx_sites ;;
-            4) delete_nginx_site ;;
-            5) manage_nginx_service ;;
-            6) view_nginx_logs ;;
-            0) return ;;
-            *) print_error "无效选择"; sleep 1 ;;
-        esac
-    done
+        # 添加 client_max_body_size
+        if ! grep -q "client_max_body_size" "$nginx_conf"; then
+            sed -i '/http {/a \    client_max_body_size 512M;' "$nginx_conf"
+        fi
+    fi
+    
+    # 启动服务
+    print_info "[3/3] 启动 Nginx..."
+    systemctl enable nginx
+    systemctl restart nginx
+    
+    echo ""
+    print_success "Nginx 安装完成！"
+    echo ""
+    print_info "安装信息："
+    echo "  版本: $(nginx -v 2>&1 | grep -oP 'nginx/\K[0-9.]+')"
+    echo "  配置: ${conf_dir}/nginx.conf"
+    echo "  站点: ${sites_avail}"
+    echo "  日志: /var/log/nginx"
+    echo ""
+    print_info "访问 http://localhost 查看默认页面"
+    
+    press_enter
 }
+
 
 # ============================================
-# Caddy 管理函数
-# ============================================
-
-# 检查 Caddy 是否安装
-check_caddy() {
-    if command -v caddy &> /dev/null; then
-        return 0
-    else
-        return 1
-    fi
-}
-
 # 安装 Caddy
+# ============================================
+
+
 install_caddy() {
     clear
     echo "=========================================="
@@ -979,268 +337,734 @@ install_caddy() {
     echo "=========================================="
     echo ""
     
-    if check_caddy; then
-        print_warning "Caddy 已安装"
-        caddy version
-        press_enter
-        return
+    check_root || return
+    
+    if command -v caddy &> /dev/null; then
+        local version=$(caddy version | head -1 | awk '{print $1}')
+        print_warning "Caddy 已安装 (版本: $version)"
+        echo ""
+        read -p "是否重新安装？[y/N]: " reinstall
+        if [[ ! "$reinstall" =~ ^[Yy]$ ]]; then
+            press_enter
+            return
+        fi
     fi
     
-    print_info "正在安装依赖..."
+    print_info "开始安装 Caddy..."
     echo ""
     
-    sudo apt update
-    sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+    # 安装依赖
+    print_info "[1/4] 安装依赖..."
+    apt update
+    apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
     
-    # 添加 Caddy 官方仓库
-    print_info "添加 Caddy 仓库..."
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+    # 添加 GPG 密钥
+    print_info "[2/4] 添加 Caddy GPG 密钥..."
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    
+    # 添加仓库
+    print_info "[3/4] 添加 Caddy 仓库..."
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
     
     # 安装 Caddy
-    print_info "正在安装 Caddy..."
-    sudo apt update
-    sudo apt install -y caddy
+    print_info "[4/4] 安装 Caddy..."
+    apt update
+    apt install -y caddy
     
-    if [ $? -eq 0 ]; then
-        print_success "Caddy 安装成功"
-        echo ""
-        caddy version
-        
-        # Caddy 安装后会自动创建 systemd 服务
-        print_success "systemd 服务已自动创建"
-        
-        # 启动服务
-        sudo systemctl enable caddy
-        sudo systemctl start caddy
-        
-        print_success "Caddy 服务已启动并设置为开机自启"
-        
-        # 显示服务状态
-        echo ""
-        print_info "服务状态："
-        sudo systemctl status caddy --no-pager -l | head -n 10
-    else
-        print_error "Caddy 安装失败"
-    fi
+    # 配置
+    mkdir -p /etc/caddy/sites
     
-    press_enter
+    # 创建简单配置
+    cat > /etc/caddy/Caddyfile << 'CADDYCONF'
+# Caddy 全局配置
+{
+    admin localhost:2019
+    auto_https off
 }
 
-# 创建 Caddy 站点
-create_caddy_site() {
-    clear
-    echo "=========================================="
-    echo "   创建 Caddy 站点"
-    echo "=========================================="
-    echo ""
+# 默认站点
+:80 {
+    root * /var/www/html
+    file_server
     
-    read -p "站点域名 (例如: example.com): " domain
-    if [ -z "$domain" ]; then
-        print_error "域名不能为空"
-        press_enter
-        return
-    fi
+    # PHP 支持（如果需要）
+    # php_fastcgi unix//run/php/php8.5-fpm.sock
     
-    read -p "网站根目录 (默认: /var/www/${domain}): " webroot
-    webroot=${webroot:-/var/www/${domain}}
+    log {
+        output file /var/log/caddy/access.log
+    }
+}
+
+# 导入站点配置
+import /etc/caddy/sites/*.caddy
+CADDYCONF
     
-    read -p "是否启用自动 HTTPS (Let's Encrypt)? (y/n): " enable_https
-    
-    # 创建网站目录
-    sudo mkdir -p "$webroot"
-    sudo chown -R caddy:caddy "$webroot"
-    
-    # 创建默认 index.html
-    sudo tee "$webroot/index.html" > /dev/null << EOF
+    # 创建默认页面
+    mkdir -p /var/www/html
+    cat > /var/www/html/index.html << 'WELCOME'
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Welcome to ${domain}</title>
+    <meta charset="utf-8">
+    <title>Caddy 欢迎页</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 50px; }
-        h1 { color: #333; }
+        body { font-family: Arial; margin: 50px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 40px; border-radius: 10px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
+        h1 { color: #667eea; }
+        .info { background: #f8f9fa; padding: 20px; border-radius: 5px; margin: 20px 0; border-left: 4px solid #667eea; }
+        code { background: #e9ecef; padding: 2px 8px; border-radius: 3px; font-family: monospace; }
     </style>
 </head>
 <body>
-    <h1>Welcome to ${domain}</h1>
-    <p>This site is powered by Caddy.</p>
+    <div class="container">
+        <h1>🎉 Caddy 安装成功！</h1>
+        <div class="info">
+            <p><strong>配置文件：</strong><code>/etc/caddy/Caddyfile</code></p>
+            <p><strong>站点目录：</strong><code>/var/www/html</code></p>
+            <p><strong>日志目录：</strong><code>/var/log/caddy</code></p>
+            <p><strong>虚拟主机：</strong><code>/etc/caddy/sites</code></p>
+        </div>
+        <h2>特性</h2>
+        <ul>
+            <li>自动 HTTPS（Let's Encrypt）</li>
+            <li>HTTP/2 和 HTTP/3 支持</li>
+            <li>简单的配置语法</li>
+            <li>内置静态文件服务器</li>
+        </ul>
+        <h2>管理命令</h2>
+        <ul>
+            <li>启动: <code>systemctl start caddy</code></li>
+            <li>停止: <code>systemctl stop caddy</code></li>
+            <li>重启: <code>systemctl restart caddy</code></li>
+            <li>重载: <code>systemctl reload caddy</code></li>
+            <li>验证配置: <code>caddy validate --config /etc/caddy/Caddyfile</code></li>
+        </ul>
+    </div>
 </body>
 </html>
-EOF
+WELCOME
     
-    # 创建 Caddy 配置目录
-    sudo mkdir -p /etc/caddy/sites
+    chown -R caddy:caddy /var/www/html
+    mkdir -p /var/log/caddy
+    chown -R caddy:caddy /var/log/caddy
     
-    # 创建站点配置
-    local config_file="/etc/caddy/sites/${domain}.caddy"
+    # 启动服务
+    systemctl enable caddy
+    systemctl restart caddy
     
-    if [ "$enable_https" = "y" ] || [ "$enable_https" = "Y" ]; then
-        # 启用 HTTPS（自动获取证书）
-        sudo tee "$config_file" > /dev/null << EOF
-${domain} {
-    root * ${webroot}
-    file_server
+    echo ""
+    print_success "Caddy 安装完成！"
+    echo ""
+    print_info "安装信息："
+    echo "  版本: $(caddy version | head -1)"
+    echo "  配置: /etc/caddy/Caddyfile"
+    echo "  站点: /etc/caddy/sites"
+    echo "  日志: /var/log/caddy"
+    echo ""
+    print_info "访问 http://localhost 查看默认页面"
     
-    # 日志
-    log {
-        output file /var/log/caddy/${domain}-access.log
-    }
-    
-    # 编码
-    encode gzip
-    
-    # 错误页面
-    handle_errors {
-        @404 {
-            expression {http.error.status_code} == 404
-        }
-        rewrite @404 /404.html
-    }
+    press_enter
 }
-EOF
-    else
-        # 仅 HTTP
-        sudo tee "$config_file" > /dev/null << EOF
-http://${domain} {
-    root * ${webroot}
-    file_server
+
+
+# ============================================
+# 安装 PHP 8.5
+# ============================================
+
+
+install_php85() {
+    clear
+    echo "=========================================="
+    echo "   安装 PHP 8.5"
+    echo "=========================================="
+    echo ""
     
-    # 日志
-    log {
-        output file /var/log/caddy/${domain}-access.log
-    }
+    check_root || return
     
-    # 编码
-    encode gzip
-}
-EOF
-    fi
-    
-    # 创建日志目录
-    sudo mkdir -p /var/log/caddy
-    sudo chown -R caddy:caddy /var/log/caddy
-    
-    # 更新主配置文件包含站点配置
-    if ! grep -q "import sites/\*" /etc/caddy/Caddyfile; then
-        echo "import sites/*" | sudo tee -a /etc/caddy/Caddyfile > /dev/null
-    fi
-    
-    # 验证配置
-    if sudo caddy validate --config /etc/caddy/Caddyfile; then
-        sudo systemctl reload caddy
-        print_success "站点创建成功"
+    # 检查是否已安装
+    if command -v php8.5 &> /dev/null; then
+        local version=$(php8.5 -v | head -1 | grep -oP 'PHP \K[0-9.]+')
+        print_warning "PHP 8.5 已安装 (版本: $version)"
         echo ""
-        echo "站点信息："
-        echo "  域名: ${domain}"
-        echo "  根目录: ${webroot}"
-        if [ "$enable_https" = "y" ] || [ "$enable_https" = "Y" ]; then
-            echo "  协议: HTTPS (自动证书)"
-            print_info "Caddy 将自动从 Let's Encrypt 获取 SSL 证书"
+        read -p "是否重新安装？[y/N]: " reinstall
+        if [[ ! "$reinstall" =~ ^[Yy]$ ]]; then
+            press_enter
+            return
+        fi
+    fi
+    
+    print_info "开始安装 PHP 8.5..."
+    echo ""
+    
+    print_info "📋 PHP 8.5 特性："
+    echo "  - OPcache 现已内置到核心，无需单独安装"
+    echo "  - 新增内置扩展：uri 和 lexbor"
+    echo "  - 新增 max_memory_limit INI 指令"
+    echo ""
+    
+    # 添加 Sury PHP 仓库
+    print_info "[1/4] 添加 Sury PHP 仓库..."
+    apt update
+    apt install -y lsb-release ca-certificates apt-transport-https software-properties-common gnupg2
+    
+    # 添加 GPG 密钥
+    wget -qO /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
+    
+    # 添加仓库
+    echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
+    
+    apt update
+    
+    # 安装 PHP 8.5 及常用扩展
+    print_info "[2/4] 安装 PHP 8.5 和常用扩展..."
+    
+    # 注意：
+    # - 不再需要 php8.5-opcache，因为 OPcache 已内置
+    # - php8.5-mysql 包含 mysqli 和 mysqlnd
+    apt install -y \
+        php8.5-fpm \
+        php8.5-cli \
+        php8.5-common \
+        php8.5-mysql \
+        php8.5-pgsql \
+        php8.5-sqlite3 \
+        php8.5-curl \
+        php8.5-gd \
+        php8.5-mbstring \
+        php8.5-xml \
+        php8.5-zip \
+        php8.5-intl \
+        php8.5-bcmath \
+        php8.5-redis \
+        php8.5-imagick \
+        php8.5-soap \
+        php8.5-xmlrpc
+    
+    # 优化 PHP 配置
+    print_info "[3/4] 优化 PHP 配置..."
+    
+    local php_ini_fpm="/etc/php/8.5/fpm/php.ini"
+    local php_ini_cli="/etc/php/8.5/cli/php.ini"
+    
+    # 备份原配置
+    if [ -f "$php_ini_fpm" ]; then
+        cp "$php_ini_fpm" "${php_ini_fpm}.bak.$(date +%Y%m%d_%H%M%S)"
+    fi
+    
+    # 优化 FPM 配置
+    if [ -f "$php_ini_fpm" ]; then
+        # 基础设置
+        sed -i 's/^upload_max_filesize.*/upload_max_filesize = 256M/' "$php_ini_fpm"
+        sed -i 's/^post_max_size.*/post_max_size = 256M/' "$php_ini_fpm"
+        sed -i 's/^memory_limit.*/memory_limit = 512M/' "$php_ini_fpm"
+        sed -i 's/^max_execution_time.*/max_execution_time = 300/' "$php_ini_fpm"
+        sed -i 's/^max_input_time.*/max_input_time = 300/' "$php_ini_fpm"
+        sed -i 's/^;date.timezone.*/date.timezone = Asia\/Shanghai/' "$php_ini_fpm"
+        
+        # OPcache 优化（注意：PHP 8.5 中 OPcache 已内置，但仍可配置）
+        # OPcache 默认已启用，这里只是调整参数
+        sed -i 's/^;opcache.enable=.*/opcache.enable=1/' "$php_ini_fpm"
+        sed -i 's/^;opcache.memory_consumption=.*/opcache.memory_consumption=256/' "$php_ini_fpm"
+        sed -i 's/^;opcache.interned_strings_buffer=.*/opcache.interned_strings_buffer=16/' "$php_ini_fpm"
+        sed -i 's/^;opcache.max_accelerated_files=.*/opcache.max_accelerated_files=10000/' "$php_ini_fpm"
+        sed -i 's/^;opcache.revalidate_freq=.*/opcache.revalidate_freq=60/' "$php_ini_fpm"
+        sed -i 's/^;opcache.enable_cli=.*/opcache.enable_cli=1/' "$php_ini_fpm"
+        
+        # PHP 8.5 新特性：max_memory_limit（可选）
+        # 限制 memory_limit 可以设置的最大值
+        if ! grep -q "max_memory_limit" "$php_ini_fpm"; then
+            echo "" >> "$php_ini_fpm"
+            echo "; PHP 8.5 新特性：限制 memory_limit 的最大值" >> "$php_ini_fpm"
+            echo ";max_memory_limit = 1G" >> "$php_ini_fpm"
+        fi
+    fi
+    
+    # 优化 FPM 池配置
+    local pool_conf="/etc/php/8.5/fpm/pool.d/www.conf"
+    if [ -f "$pool_conf" ]; then
+        cp "$pool_conf" "${pool_conf}.bak.$(date +%Y%m%d_%H%M%S)"
+        
+        # 动态进程管理
+        sed -i 's/^pm = .*/pm = dynamic/' "$pool_conf"
+        sed -i 's/^pm.max_children = .*/pm.max_children = 50/' "$pool_conf"
+        sed -i 's/^pm.start_servers = .*/pm.start_servers = 5/' "$pool_conf"
+        sed -i 's/^pm.min_spare_servers = .*/pm.min_spare_servers = 5/' "$pool_conf"
+        sed -i 's/^pm.max_spare_servers = .*/pm.max_spare_servers = 10/' "$pool_conf"
+        
+        # 启用慢日志
+        if ! grep -q "^slowlog" "$pool_conf"; then
+            echo "" >> "$pool_conf"
+            echo "; 慢查询日志" >> "$pool_conf"
+            echo "slowlog = /var/log/php8.5-fpm-slow.log" >> "$pool_conf"
+            echo "request_slowlog_timeout = 10s" >> "$pool_conf"
+        fi
+    fi
+    
+    # 启动服务
+    print_info "[4/4] 启动 PHP-FPM..."
+    systemctl enable php8.5-fpm
+    systemctl restart php8.5-fpm
+    
+    # 验证 OPcache
+    local opcache_status=$(php8.5 -m | grep -i opcache || echo "")
+    
+    echo ""
+    print_success "PHP 8.5 安装完成！"
+    echo ""
+    echo "=========================================="
+    print_info "安装信息"
+    echo "=========================================="
+    echo ""
+    echo "版本信息："
+    php8.5 -v | head -1
+    echo ""
+    
+    echo "配置文件："
+    echo "  FPM: ${php_ini_fpm}"
+    echo "  CLI: ${php_ini_cli}"
+    echo "  Pool: ${pool_conf}"
+    echo ""
+    
+    echo "运行环境："
+    echo "  FPM Socket: /run/php/php8.5-fpm.sock"
+    echo "  慢日志: /var/log/php8.5-fpm-slow.log"
+    echo ""
+    
+    echo "OPcache 状态："
+    if [ -n "$opcache_status" ]; then
+        print_success "  OPcache: 已内置并启用 ✓"
+        echo "  （PHP 8.5 中 OPcache 已是核心组件）"
+    else
+        print_warning "  OPcache: 检测失败"
+    fi
+    echo ""
+    
+    echo "=========================================="
+    print_info "已安装的扩展 ($(php8.5 -m | wc -l) 个)"
+    echo "=========================================="
+    echo ""
+    
+    # 分组显示扩展
+    echo "核心扩展（内置）："
+    php8.5 -m | grep -iE "(Core|date|hash|json|Reflection|SPL|standard|Zend OPcache|uri|lexbor)" | sed 's/^/  /'
+    echo ""
+    
+    echo "数据库扩展："
+    php8.5 -m | grep -iE "(mysqli|mysqlnd|pdo|pgsql|sqlite)" | sed 's/^/  /'
+    echo ""
+    
+    echo "常用扩展："
+    php8.5 -m | grep -viE "(Core|date|hash|json|Reflection|SPL|standard|Zend OPcache|uri|lexbor|mysqli|mysqlnd|pdo|pgsql|sqlite)" | sed 's/^/  /'
+    echo ""
+    
+    echo "=========================================="
+    print_info "服务状态"
+    echo "=========================================="
+    systemctl status php8.5-fpm --no-pager -l | head -10
+    echo ""
+    
+    echo "=========================================="
+    print_info "PHP 8.5 新特性"
+    echo "=========================================="
+    echo ""
+    echo "✓ OPcache 现为内置组件（无需单独安装）"
+    echo "✓ 新增 uri 和 lexbor 核心扩展"
+    echo "✓ 新增 max_memory_limit INI 指令"
+    echo "✓ Property hooks 特性"
+    echo "✓ Asymmetric visibility 特性"
+    echo "✓ 性能和安全性改进"
+    echo ""
+    
+    print_warning "重要提示："
+    echo "  1. OPcache 已自动启用，可通过 opcache.enable 配置"
+    echo "  2. mysqli 扩展已包含在 php8.5-mysql 包中"
+    echo "  3. 建议使用 PDO 或 MySQLi 进行数据库操作"
+    echo "  4. 旧的 mysql 扩展已在 PHP 7.0 中移除"
+    echo ""
+    
+    press_enter
+}
+
+
+# ============================================
+# 安装 NVM (Node Version Manager)
+# ============================================
+
+
+install_nvm() {
+    clear
+    echo "=========================================="
+    echo "   安装 NVM (Node.js 版本管理器)"
+    echo "=========================================="
+    echo ""
+    
+    check_root || return
+    
+    print_warning "⚠️  安全建议："
+    echo "  - NVM 应该以普通用户身份运行，而不是 root"
+    echo "  - 建议为 Node.js 应用创建专用用户"
+    echo "  - 这样可以隔离权限，提高安全性"
+    echo ""
+    
+    # 选择安装方式
+    echo "安装选项："
+    echo "1. 为现有用户安装 NVM"
+    echo "2. 创建新用户并安装 NVM（推荐）"
+    echo "0. 取消"
+    echo ""
+    read -p "请选择 [0-2]: " choice
+    
+    case $choice in
+        1)
+            install_nvm_existing_user
+            ;;
+        2)
+            install_nvm_new_user
+            ;;
+        0)
+            print_info "已取消"
+            press_enter
+            return
+            ;;
+        *)
+            print_error "无效选择"
+            press_enter
+            return
+            ;;
+    esac
+}
+
+
+# 为现有用户安装 NVM
+install_nvm_existing_user() {
+    echo ""
+    print_info "为现有用户安装 NVM"
+    echo ""
+    
+    # 列出现有用户（非系统用户）
+    print_info "可用的用户："
+    local count=0
+    local -a users
+    while IFS=: read -r username _ uid _ _ home shell; do
+        # 只显示普通用户（UID >= 1000 且有有效 shell）
+        if [ "$uid" -ge 1000 ] && [[ "$shell" =~ (bash|zsh|sh)$ ]]; then
+            count=$((count+1))
+            users+=("$username:$home")
+            echo "  $count. $username (Home: $home)"
+        fi
+    done < /etc/passwd
+    
+    if [ "$count" -eq 0 ]; then
+        print_error "未找到可用的普通用户"
+        print_info "请先创建用户或选择创建新用户安装"
+        press_enter
+        return
+    fi
+    
+    echo ""
+    read -p "输入用户名: " target_user
+    
+    # 验证用户存在
+    if ! id "$target_user" &>/dev/null; then
+        print_error "用户不存在: $target_user"
+        press_enter
+        return
+    fi
+    
+    # 获取用户 home 目录
+    local user_home=$(eval echo ~$target_user)
+    
+    # 检查是否已安装
+    if [ -d "$user_home/.nvm" ]; then
+        print_warning "NVM 已经为用户 $target_user 安装"
+        echo ""
+        read -p "是否重新安装？[y/N]: " reinstall
+        if [[ ! "$reinstall" =~ ^[Yy]$ ]]; then
+            press_enter
+            return
+        fi
+    fi
+    
+    echo ""
+    print_info "开始为用户 $target_user 安装 NVM..."
+    
+    # 下载并安装 NVM
+    print_info "[1/3] 下载 NVM..."
+    sudo -u "$target_user" bash << 'NVMINSTALL'
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+NVMINSTALL
+    
+    # 配置 shell
+    print_info "[2/3] 配置 shell 环境..."
+    local bashrc="$user_home/.bashrc"
+    local profile="$user_home/.profile"
+    
+    # 确保配置已加载
+    if [ -f "$bashrc" ]; then
+        if ! grep -q 'NVM_DIR' "$bashrc"; then
+            sudo -u "$target_user" bash << NVMCONFIG
+cat >> "$bashrc" << 'EOF'
+
+# NVM 配置
+export NVM_DIR="\$HOME/.nvm"
+[ -s "\$NVM_DIR/nvm.sh" ] && \. "\$NVM_DIR/nvm.sh"
+[ -s "\$NVM_DIR/bash_completion" ] && \. "\$NVM_DIR/bash_completion"
+EOF
+NVMCONFIG
+        fi
+    fi
+    
+    # 安装 Node.js LTS
+    print_info "[3/3] 安装 Node.js LTS..."
+    sudo -u "$target_user" bash << 'NODEINSTALL'
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+nvm install --lts
+nvm use --lts
+nvm alias default lts/*
+NODEINSTALL
+    
+    echo ""
+    print_success "NVM 安装完成！"
+    echo ""
+    print_info "安装信息："
+    echo "  用户: $target_user"
+    echo "  NVM 目录: $user_home/.nvm"
+    echo "  配置文件: $bashrc"
+    echo ""
+    print_info "使用方法："
+    echo "  1. 切换到用户: su - $target_user"
+    echo "  2. 查看版本: nvm --version"
+    echo "  3. 列出已安装: nvm list"
+    echo "  4. 安装版本: nvm install 18"
+    echo "  5. 使用版本: nvm use 18"
+    echo "  6. 查看 Node: node --version"
+    echo ""
+    print_warning "重要提示："
+    echo "  - 需要重新登录或执行: source ~/.bashrc"
+    echo "  - NVM 仅对用户 $target_user 可用"
+    echo "  - Node.js 全局包将安装到用户目录，无需 sudo"
+    
+    press_enter
+}
+
+
+# 创建新用户并安装 NVM
+install_nvm_new_user() {
+    echo ""
+    print_info "创建新用户并安装 NVM"
+    echo ""
+    
+    # 输入新用户名
+    read -p "新用户名 (默认: nodejs): " new_user
+    new_user=${new_user:-nodejs}
+    
+    # 检查用户是否已存在
+    if id "$new_user" &>/dev/null; then
+        print_error "用户已存在: $new_user"
+        echo ""
+        read -p "是否为此用户安装 NVM？[y/N]: " use_existing
+        if [[ ! "$use_existing" =~ ^[Yy]$ ]]; then
+            press_enter
+            return
+        fi
+    else
+        # 创建用户
+        print_info "创建用户: $new_user"
+        
+        # 询问是否创建密码
+        echo ""
+        read -p "是否为新用户设置密码？[Y/n]: " set_password
+        
+        if [[ ! "$set_password" =~ ^[Nn]$ ]]; then
+            adduser --gecos "" "$new_user"
         else
-            echo "  协议: HTTP"
+            adduser --disabled-password --gecos "" "$new_user"
+            print_warning "用户已创建但未设置密码"
+            print_info "稍后可用 passwd $new_user 设置密码"
         fi
-        echo "  配置文件: ${config_file}"
-        echo ""
-        print_info "请确保域名已解析到服务器IP"
-        if [ "$enable_https" = "y" ] || [ "$enable_https" = "Y" ]; then
-            print_warning "HTTPS 需要域名能够正确解析到此服务器"
-        fi
-    else
-        print_error "配置文件有误"
-        sudo rm -f "$config_file"
+        
+        print_success "用户创建完成"
     fi
+    
+    local user_home=$(eval echo ~$new_user)
+    
+    echo ""
+    print_info "开始为用户 $new_user 安装 NVM..."
+    
+    # 下载并安装 NVM
+    print_info "[1/3] 下载 NVM..."
+    sudo -u "$new_user" bash << 'NVMINSTALL'
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+NVMINSTALL
+    
+    # 配置 shell
+    print_info "[2/3] 配置 shell 环境..."
+    local bashrc="$user_home/.bashrc"
+    
+    if [ -f "$bashrc" ]; then
+        if ! grep -q 'NVM_DIR' "$bashrc"; then
+            sudo -u "$new_user" bash << NVMCONFIG
+cat >> "$bashrc" << 'EOF'
+
+# NVM 配置
+export NVM_DIR="\$HOME/.nvm"
+[ -s "\$NVM_DIR/nvm.sh" ] && \. "\$NVM_DIR/nvm.sh"
+[ -s "\$NVM_DIR/bash_completion" ] && \. "\$NVM_DIR/bash_completion"
+EOF
+NVMCONFIG
+        fi
+    fi
+    
+    # 安装 Node.js LTS
+    print_info "[3/3] 安装 Node.js LTS..."
+    sudo -u "$new_user" bash << 'NODEINSTALL'
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+nvm install --lts
+nvm use --lts
+nvm alias default lts/*
+NODEINSTALL
+    
+    # 创建示例应用目录
+    local app_dir="$user_home/apps"
+    sudo -u "$new_user" mkdir -p "$app_dir"
+    
+    # 创建 README
+    sudo -u "$new_user" bash << README
+cat > "$app_dir/README.md" << 'EOF'
+# Node.js 应用目录
+
+这是 $new_user 用户的应用目录。
+
+## 快速开始
+
+\`\`\`bash
+# 创建新项目
+mkdir my-app && cd my-app
+npm init -y
+
+# 安装依赖
+npm install express
+
+# 创建简单服务器
+cat > index.js << 'JS'
+const express = require('express');
+const app = express();
+const port = 3000;
+
+app.get('/', (req, res) => {
+  res.send('Hello World!');
+});
+
+app.listen(port, () => {
+  console.log(\\\`Server running at http://localhost:\\\${port}\\\`);
+});
+JS
+
+# 运行
+node index.js
+\`\`\`
+
+## 常用命令
+
+- \`nvm list\` - 列出已安装的 Node.js 版本
+- \`nvm install 18\` - 安装 Node.js 18
+- \`nvm use 18\` - 使用 Node.js 18
+- \`npm install -g pm2\` - 全局安装 PM2 进程管理器
+EOF
+README
+    
+    echo ""
+    print_success "NVM 安装完成！"
+    echo ""
+    print_info "安装信息："
+    echo "  用户: $new_user"
+    echo "  Home: $user_home"
+    echo "  NVM 目录: $user_home/.nvm"
+    echo "  应用目录: $app_dir"
+    echo ""
+    print_info "Node.js 信息："
+    sudo -u "$new_user" bash << 'NODEINFO'
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+echo "  Node.js: $(node --version)"
+echo "  npm: $(npm --version)"
+echo "  已安装版本:"
+nvm list | sed 's/^/    /'
+NODEINFO
+    
+    echo ""
+    print_info "使用方法："
+    echo "  1. 切换到用户: su - $new_user"
+    echo "  2. 查看版本: nvm --version"
+    echo "  3. 安装其他版本: nvm install 16"
+    echo "  4. 切换版本: nvm use 16"
+    echo "  5. 运行应用: cd ~/apps && node app.js"
+    echo ""
+    print_warning "安全提示："
+    echo "  - 此用户专门用于运行 Node.js 应用"
+    echo "  - 不要以 root 运行 Node.js 应用"
+    echo "  - 全局 npm 包将安装到用户目录，无需 sudo"
+    echo "  - 建议使用 PM2 管理生产环境应用"
     
     press_enter
 }
 
-# 列出 Caddy 站点
-list_caddy_sites() {
+
+# ============================================
+# 卸载服务
+# ============================================
+
+
+uninstall_service() {
     clear
     echo "=========================================="
-    echo "   Caddy 站点列表"
+    echo "   卸载 Web 服务"
     echo "=========================================="
     echo ""
     
-    local sites_dir="/etc/caddy/sites"
+    check_root || return
     
-    if [ ! -d "$sites_dir" ] || [ -z "$(ls -A $sites_dir 2>/dev/null)" ]; then
-        print_warning "没有已配置的站点"
-        press_enter
-        return
-    fi
-    
-    print_info "已配置的站点："
+    echo "可卸载的服务："
+    echo "1. OpenResty"
+    echo "2. Nginx"
+    echo "3. Caddy"
+    echo "4. PHP 8.5"
+    echo "0. 取消"
     echo ""
+    read -p "请选择 [0-4]: " choice
     
-    for conf in "$sites_dir"/*.caddy; do
-        if [ -f "$conf" ]; then
-            local domain=$(basename "$conf" .caddy)
-            local root=$(grep "root \*" "$conf" | awk '{print $3}')
-            local protocol="HTTP"
-            
-            # 检查是否配置了 HTTPS
-            if grep -q "^${domain} {" "$conf"; then
-                protocol="HTTPS (自动证书)"
-            fi
-            
-            echo -e "${GREEN}●${NC} ${domain}"
-            echo "   协议: ${protocol}"
-            echo "   根目录: ${root}"
-            echo ""
-        fi
-    done
-    
-    press_enter
+    case $choice in
+        1)
+            uninstall_openresty
+            ;;
+        2)
+            uninstall_nginx
+            ;;
+        3)
+            uninstall_caddy
+            ;;
+        4)
+            uninstall_php85
+            ;;
+        0)
+            print_info "已取消"
+            press_enter
+            ;;
+        *)
+            print_error "无效选择"
+            press_enter
+            ;;
+    esac
 }
 
-# 删除 Caddy 站点
-delete_caddy_site() {
-    clear
-    echo "=========================================="
-    echo "   删除 Caddy 站点"
-    echo "=========================================="
+
+uninstall_openresty() {
     echo ""
-    
-    local sites_dir="/etc/caddy/sites"
-    
-    if [ ! -d "$sites_dir" ] || [ -z "$(ls -A $sites_dir 2>/dev/null)" ]; then
-        print_warning "没有可删除的站点"
-        press_enter
-        return
-    fi
-    
-    print_info "已配置的站点："
+    print_warning "⚠️  警告: 即将卸载 OpenResty 及其所有配置"
     echo ""
-    
-    local i=1
-    declare -A site_map
-    
-    for conf in "$sites_dir"/*.caddy; do
-        if [ -f "$conf" ]; then
-            local domain=$(basename "$conf" .caddy)
-            echo "${i}. ${domain}"
-            site_map[$i]="$domain"
-            ((i++))
-        fi
-    done
-    
-    echo ""
-    read -p "选择要删除的站点编号: " choice
-    
-    local selected_domain="${site_map[$choice]}"
-    
-    if [ -z "$selected_domain" ]; then
-        print_error "无效选择"
-        press_enter
-        return
-    fi
-    
-    # 获取网站根目录
-    local webroot=$(grep "root \*" "/etc/caddy/sites/${selected_domain}.caddy" 2>/dev/null | awk '{print $3}')
-    
-    print_warning "警告：此操作将删除站点配置"
-    read -p "确认删除 ${selected_domain}？(yes/no): " confirm
+    read -p "确认卸载？输入 'yes' 确认: " confirm
     
     if [ "$confirm" != "yes" ]; then
         print_info "已取消"
@@ -1248,222 +1072,282 @@ delete_caddy_site() {
         return
     fi
     
-    # 删除配置文件
-    sudo rm -f "/etc/caddy/sites/${selected_domain}.caddy"
+    print_info "正在卸载 OpenResty..."
     
-    # 重载配置
-    if sudo caddy validate --config /etc/caddy/Caddyfile; then
-        sudo systemctl reload caddy
-        print_success "站点已删除"
-        
-        echo ""
-        read -p "是否同时删除网站文件？(yes/no): " delete_files
-        if [ "$delete_files" = "yes" ] && [ -n "$webroot" ] && [ -d "$webroot" ]; then
-            sudo rm -rf "$webroot"
-            print_success "网站文件已删除"
-        fi
-    else
-        print_error "配置验证失败"
+    # 停止服务
+    systemctl stop openresty 2>/dev/null || true
+    systemctl disable openresty 2>/dev/null || true
+    
+    # 卸载软件包
+    apt remove --purge -y openresty
+    apt autoremove -y
+    
+    # 询问是否删除配置
+    echo ""
+    read -p "是否删除配置文件和日志？[y/N]: " delete_config
+    if [[ "$delete_config" =~ ^[Yy]$ ]]; then
+        rm -rf /usr/local/openresty
+        rm -f /etc/apt/sources.list.d/openresty.list
+        rm -f /usr/share/keyrings/openresty.gpg
+        print_success "配置已删除"
     fi
     
+    print_success "OpenResty 已卸载"
     press_enter
 }
 
-# Caddy 服务管理
-manage_caddy_service() {
+
+uninstall_nginx() {
+    echo ""
+    print_warning "⚠️  警告: 即将卸载 Nginx 及其所有配置"
+    echo ""
+    read -p "确认卸载？输入 'yes' 确认: " confirm
+    
+    if [ "$confirm" != "yes" ]; then
+        print_info "已取消"
+        press_enter
+        return
+    fi
+    
+    print_info "正在卸载 Nginx..."
+    
+    systemctl stop nginx 2>/dev/null || true
+    systemctl disable nginx 2>/dev/null || true
+    
+    apt remove --purge -y nginx nginx-common nginx-full
+    apt autoremove -y
+    
+    echo ""
+    read -p "是否删除配置文件和日志？[y/N]: " delete_config
+    if [[ "$delete_config" =~ ^[Yy]$ ]]; then
+        rm -rf /etc/nginx
+        rm -rf /var/log/nginx
+        print_success "配置已删除"
+    fi
+    
+    print_success "Nginx 已卸载"
+    press_enter
+}
+
+
+uninstall_caddy() {
+    echo ""
+    print_warning "⚠️  警告: 即将卸载 Caddy 及其所有配置"
+    echo ""
+    read -p "确认卸载？输入 'yes' 确认: " confirm
+    
+    if [ "$confirm" != "yes" ]; then
+        print_info "已取消"
+        press_enter
+        return
+    fi
+    
+    print_info "正在卸载 Caddy..."
+    
+    systemctl stop caddy 2>/dev/null || true
+    systemctl disable caddy 2>/dev/null || true
+    
+    apt remove --purge -y caddy
+    apt autoremove -y
+    
+    echo ""
+    read -p "是否删除配置文件和日志？[y/N]: " delete_config
+    if [[ "$delete_config" =~ ^[Yy]$ ]]; then
+        rm -rf /etc/caddy
+        rm -rf /var/log/caddy
+        rm -f /etc/apt/sources.list.d/caddy-stable.list
+        rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        print_success "配置已删除"
+    fi
+    
+    print_success "Caddy 已卸载"
+    press_enter
+}
+
+
+uninstall_php85() {
+    echo ""
+    print_warning "⚠️  警告: 即将卸载 PHP 8.5 及其所有扩展"
+    echo ""
+    read -p "确认卸载？输入 'yes' 确认: " confirm
+    
+    if [ "$confirm" != "yes" ]; then
+        print_info "已取消"
+        press_enter
+        return
+    fi
+    
+    print_info "正在卸载 PHP 8.5..."
+    
+    systemctl stop php8.5-fpm 2>/dev/null || true
+    systemctl disable php8.5-fpm 2>/dev/null || true
+    
+    apt remove --purge -y 'php8.5*'
+    apt autoremove -y
+    
+    echo ""
+    read -p "是否删除配置文件？[y/N]: " delete_config
+    if [[ "$delete_config" =~ ^[Yy]$ ]]; then
+        rm -rf /etc/php/8.5
+        print_success "配置已删除"
+    fi
+    
+    print_success "PHP 8.5 已卸载"
+    press_enter
+}
+
+
+# ============================================
+# 查看服务状态
+# ============================================
+
+
+view_services_status() {
     clear
     echo "=========================================="
-    echo "   Caddy 服务管理"
+    echo "   Web 服务状态"
     echo "=========================================="
     echo ""
     
-    echo "1. 查看服务状态"
-    echo "2. 启动服务"
-    echo "3. 停止服务"
-    echo "4. 重启服务"
-    echo "5. 重载配置"
-    echo "6. 验证配置"
-    echo "0. 返回"
-    echo ""
-    
-    read -p "请选择 [0-6]: " choice
-    
-    case $choice in
-        1)
-            sudo systemctl status caddy --no-pager -l
-            ;;
-        2)
-            sudo systemctl start caddy
-            print_success "Caddy 服务已启动"
-            ;;
-        3)
-            sudo systemctl stop caddy
-            print_success "Caddy 服务已停止"
-            ;;
-        4)
-            sudo systemctl restart caddy
-            print_success "Caddy 服务已重启"
-            ;;
-        5)
-            if sudo caddy validate --config /etc/caddy/Caddyfile; then
-                sudo systemctl reload caddy
-                print_success "配置已重载"
-            else
-                print_error "配置验证失败，未重载"
-            fi
-            ;;
-        6)
-            sudo caddy validate --config /etc/caddy/Caddyfile
-            ;;
-        0)
-            return
-            ;;
-    esac
-    
-    press_enter
-}
-
-# 查看 Caddy 日志
-view_caddy_logs() {
-    clear
-    echo "=========================================="
-    echo "   Caddy 日志查看"
-    echo "=========================================="
-    echo ""
-    
-    echo "1. 系统日志 (journalctl)"
-    echo "2. 站点访问日志"
-    echo "0. 返回"
-    echo ""
-    
-    read -p "请选择 [0-2]: " choice
-    
-    case $choice in
-        1)
-            echo ""
-            print_info "最近100行系统日志："
-            echo ""
-            sudo journalctl -u caddy -n 100 --no-pager
-            ;;
-        2)
-            echo ""
-            print_info "可用的站点日志："
-            ls -1 /var/log/caddy/*-access.log 2>/dev/null | xargs -n 1 basename
-            echo ""
-            read -p "输入站点名称: " site
-            if [ -f "/var/log/caddy/${site}-access.log" ]; then
-                sudo tail -n 100 "/var/log/caddy/${site}-access.log"
-            else
-                print_error "日志文件不存在"
-            fi
-            ;;
-        0)
-            return
-            ;;
-    esac
-    
-    press_enter
-}
-
-# Caddy 子菜单
-caddy_menu() {
-    while true; do
-        clear
-        echo "=========================================="
-        echo "   Caddy 管理"
-        echo "=========================================="
+    # OpenResty
+    if command -v openresty &> /dev/null; then
+        echo -e "${CYAN}OpenResty${NC}"
+        echo "  版本: $(openresty -v 2>&1 | grep -oP 'openresty/\K[0-9.]+')"
+        systemctl is-active --quiet openresty && print_success "  状态: 运行中" || print_error "  状态: 已停止"
         echo ""
+    fi
+    
+    # Nginx
+    if command -v nginx &> /dev/null; then
+        echo -e "${CYAN}Nginx${NC}"
+        echo "  版本: $(nginx -v 2>&1 | grep -oP 'nginx/\K[0-9.]+')"
+        systemctl is-active --quiet nginx && print_success "  状态: 运行中" || print_error "  状态: 已停止"
+        echo ""
+    fi
+    
+    # Caddy
+    if command -v caddy &> /dev/null; then
+        echo -e "${CYAN}Caddy${NC}"
+        echo "  版本: $(caddy version | head -1)"
+        systemctl is-active --quiet caddy && print_success "  状态: 运行中" || print_error "  状态: 已停止"
+        echo ""
+    fi
+    
+    # PHP 8.5
+    if command -v php8.5 &> /dev/null; then
+        echo -e "${CYAN}PHP 8.5${NC}"
+        echo "  版本: $(php8.5 -v | head -1 | grep -oP 'PHP \K[0-9.]+')"
+        systemctl is-active --quiet php8.5-fpm && print_success "  状态: 运行中" || print_error "  状态: 已停止"
+        echo "  Socket: /run/php/php8.5-fpm.sock"
         
-        if check_caddy; then
-            print_success "Caddy 已安装"
-            caddy_version=$(caddy version | head -n 1)
-            echo "  版本: ${caddy_version}"
-            
-            # 显示服务状态
-            if systemctl is-active --quiet caddy; then
-                print_success "服务状态: 运行中"
-            else
-                print_error "服务状态: 已停止"
-            fi
-        else
-            print_warning "Caddy 未安装"
+        # 显示 OPcache 状态
+        if php8.5 -m | grep -qi opcache; then
+            print_success "  OPcache: 已内置 ✓"
         fi
-        
         echo ""
-        echo "1. 安装 Caddy"
-        echo "2. 创建站点"
-        echo "3. 列出站点"
-        echo "4. 删除站点"
-        echo "5. 服务管理"
-        echo "6. 查看日志"
-        echo "0. 返回上级菜单"
-        echo ""
-        
-        read -p "请选择 [0-6]: " choice
-        
-        case $choice in
-            1) install_caddy ;;
-            2) create_caddy_site ;;
-            3) list_caddy_sites ;;
-            4) delete_caddy_site ;;
-            5) manage_caddy_service ;;
-            6) view_caddy_logs ;;
-            0) return ;;
-            *) print_error "无效选择"; sleep 1 ;;
-        esac
+    fi
+    
+    # NVM (检查常见用户)
+    echo -e "${CYAN}NVM (Node.js)${NC}"
+    local found_nvm=false
+    for user_home in /home/*; do
+        if [ -d "$user_home/.nvm" ]; then
+            local username=$(basename "$user_home")
+            found_nvm=true
+            echo "  用户: $username"
+            if [ -f "$user_home/.nvm/alias/default" ]; then
+                local node_version=$(cat "$user_home/.nvm/alias/default")
+                echo "  默认版本: $node_version"
+            fi
+        fi
     done
+    if ! $found_nvm; then
+        echo "  未安装"
+    fi
+    echo ""
+    
+    echo "=========================================="
+    
+    press_enter
 }
+
 
 # ============================================
 # 主菜单
 # ============================================
 
-main_menu() {
+
+show_webserver_menu() {
+    clear
+    echo "=========================================="
+    echo "   Web 服务器管理"
+    echo "=========================================="
+    echo ""
+    
+    echo "【Web 服务器】"
+    echo ""
+    echo "1. 🚀 安装 OpenResty (Nginx + Lua)"
+    echo "2. 🌐 安装 Nginx"
+    echo "3. ⚡ 安装 Caddy"
+    echo ""
+    
+    echo "【运行环境】"
+    echo ""
+    echo "4. 🐘 安装 PHP 8.5"
+    echo "5. 📦 安装 NVM (Node.js 版本管理)"
+    echo ""
+    
+    echo "【管理工具】"
+    echo ""
+    echo "6. 📊 查看服务状态"
+    echo "7. 🗑️  卸载服务"
+    echo ""
+    
+    echo "0. 返回主菜单"
+    echo "=========================================="
+}
+
+
+webserver_menu() {
     while true; do
-        clear
-        echo "=========================================="
-        echo "   Web 服务器管理"
-        echo "=========================================="
-        echo ""
-        
-        # 显示安装状态
-        if check_openresty; then
-            print_success "OpenResty: 已安装"
-        else
-            echo -e "${YELLOW}○${NC} OpenResty: 未安装"
-        fi
-        
-        if check_nginx; then
-            print_success "Nginx: 已安装"
-        else
-            echo -e "${YELLOW}○${NC} Nginx: 未安装"
-        fi
-        
-        if check_caddy; then
-            print_success "Caddy: 已安装"
-        else
-            echo -e "${YELLOW}○${NC} Caddy: 未安装"
-        fi
-        
-        echo ""
-        echo "1. OpenResty 管理"
-        echo "2. Nginx 管理"
-        echo "3. Caddy 管理"
-        echo ""
-        echo "0. 返回主菜单"
-        echo ""
-        
-        read -p "请选择 [0-3]: " choice
+        show_webserver_menu
+        read -p "请选择 [0-7]: " choice
         
         case $choice in
-            1) openresty_menu ;;
-            2) nginx_menu ;;
-            3) caddy_menu ;;
-            0) exit 0 ;;
-            *) print_error "无效选择"; sleep 1 ;;
+            1)
+                install_openresty
+                ;;
+            2)
+                install_nginx
+                ;;
+            3)
+                install_caddy
+                ;;
+            4)
+                install_php85
+                ;;
+            5)
+                install_nvm
+                ;;
+            6)
+                view_services_status
+                ;;
+            7)
+                uninstall_service
+                ;;
+            0)
+                print_success "返回主菜单"
+                sleep 1
+                return 0
+                ;;
+            *)
+                print_error "无效选择"
+                sleep 1
+                ;;
         esac
     done
 }
 
-# 启动主菜单
-main_menu
+
+# 启动菜单
+webserver_menu
