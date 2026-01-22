@@ -452,7 +452,7 @@ install_dependencies() {
             php${PHP_VERSION}-common php${PHP_VERSION}-mysql php${PHP_VERSION}-pgsql \
             php${PHP_VERSION}-curl php${PHP_VERSION}-gd php${PHP_VERSION}-mbstring \
             php${PHP_VERSION}-xml php${PHP_VERSION}-zip php${PHP_VERSION}-intl \
-            php${PHP_VERSION}-bcmath php${PHP_VERSION}-opcache
+            php${PHP_VERSION}-bcmath
         
         # 优化 PHP 配置
         local php_ini="/etc/php/${PHP_VERSION}/fpm/php.ini"
