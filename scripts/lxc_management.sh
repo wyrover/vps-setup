@@ -386,157 +386,189 @@ set_static_ip() {
         return
     fi
     
+    # 获取当前状态
+    local container_state=$(lxc-info -n "$target" -s 2>/dev/null | awk '{print $2}')
+    local was_running=false
+    if [ "$container_state" = "RUNNING" ]; then
+        was_running=true
+    fi
+    
+    echo ""
+    print_info "当前容器状态: $container_state"
+    
+    # 显示可用 IP 范围
+    echo ""
+    print_info "可用 IP 范围："
+    echo "  静态 IP: 10.0.0.2 - 10.0.0.99"
+    echo "  DHCP 范围: 10.0.0.100 - 10.0.0.254"
+    echo "  网关: 10.0.0.1"
+    echo ""
+    
     read -p "静态 IP (10.0.0.2-99): " static_ip
     
-    if [[ ! "$static_ip" =~ ^10\.0\.0\.[2-9][0-9]?$ ]]; then
-        print_error "IP 地址格式错误或超出范围"
+    # 验证 IP 格式和范围
+    if [[ ! "$static_ip" =~ ^10\.0\.0\.([2-9]|[1-9][0-9])$ ]]; then
+        print_error "IP 地址格式错误或超出范围 (10.0.0.2-99)"
         press_enter
         return
     fi
     
-    print_info "配置静态 IP..."
+    # 检查 IP 是否已被使用
+    print_info "检查 IP 冲突..."
+    for container in $(lxc-ls 2>/dev/null); do
+        if [ "$container" = "$target" ]; then
+            continue
+        fi
+        local existing_ip=$(grep "lxc.net.0.ipv4.address" "/var/lib/lxc/$container/config" 2>/dev/null | awk '{print $3}' | cut -d'/' -f1)
+        if [ "$existing_ip" = "$static_ip" ]; then
+            print_error "IP $static_ip 已被容器 $container 使用"
+            press_enter
+            return
+        fi
+    done
+    
+    local config_file="/var/lib/lxc/$target/config"
     
     # 获取或生成 MAC 地址
-    local container_mac=$(grep "lxc.net.0.hwaddr" "/var/lib/lxc/$target/config" | awk '{print $3}')
+    local container_mac=$(grep "lxc.net.0.hwaddr" "$config_file" | awk '{print $3}')
     if [ -z "$container_mac" ]; then
         container_mac=$(generate_new_mac)
-        echo "lxc.net.0.hwaddr = $container_mac" >> "/var/lib/lxc/$target/config"
+        echo "lxc.net.0.hwaddr = $container_mac" >> "$config_file"
         print_info "生成 MAC 地址: $container_mac"
     fi
     
-    # 创建 dnsmasq 配置目录（如果不存在）
-    mkdir -p /etc/lxc
-    touch /etc/lxc/dnsmasq.conf
-    
-    # 方法1：使用 dnsmasq.conf 配置静态 IP（推荐）
-    print_info "配置 dnsmasq..."
-    
-    # 清理旧的绑定记录
-    sed -i "/^dhcp-host=.*,${target},/d; /^dhcp-host=${container_mac},/d; /^dhcp-host=.*,${static_ip}$/d" /etc/lxc/dnsmasq.conf
-    
-    # 添加新的 dhcp-host 绑定（正确格式）
-    echo "dhcp-host=${container_mac},${target},${static_ip}" >> /etc/lxc/dnsmasq.conf
-    
-    print_success "已添加 DHCP 绑定: MAC=${container_mac}, 主机名=${target}, IP=${static_ip}"
-    
-    # 清理旧的 dhcp_hosts.conf（如果存在）
-    if [ -f /etc/lxc/dhcp_hosts.conf ]; then
-        sed -i "/${container_mac}/d; /${target}/d; /${static_ip}/d" /etc/lxc/dhcp_hosts.conf
-    fi
-    
-    # 清理 dnsmasq 租约文件
-    if [ -f /var/lib/misc/dnsmasq.lxcbr0.leases ]; then
-        print_info "清理旧的 DHCP 租约..."
-        sed -i "/${container_mac}/d; /${target}/d; /${static_ip}/d" /var/lib/misc/dnsmasq.lxcbr0.leases
-    fi
-    
-    # 方法2：在容器内配置静态 IP（备用方案）
-    print_info "在容器内配置静态 IP..."
-    
-    local container_state=$(lxc-info -n "$target" -s 2>/dev/null | awk '{print $2}')
-    local was_running=false
-    
-    if [ "$container_state" = "RUNNING" ]; then
-        was_running=true
+    # 停止容器（如果正在运行）
+    if [ "$was_running" = true ]; then
         print_info "停止容器以配置网络..."
         lxc-stop -n "$target" -k 2>/dev/null || true
         sleep 2
     fi
     
-    # 配置容器内的网络（systemd-networkd 方式）
-    local network_config="/var/lib/lxc/$target/rootfs/etc/systemd/network/10-eth0.network"
-    mkdir -p "/var/lib/lxc/$target/rootfs/etc/systemd/network"
+    print_info "配置静态 IP..."
     
-    cat > "$network_config" << EOF
-[Match]
-Name=eth0
+    # 清理旧的网络配置
+    sed -i '/# 静态 IP 配置/d' "$config_file"
+    sed -i '/lxc.net.0.ipv4.address/d' "$config_file"
+    sed -i '/lxc.net.0.ipv4.gateway/d' "$config_file"
+    
+    # 添加新的静态 IP 配置
+    cat >> "$config_file" << EOF
 
-[Network]
-DHCP=yes
-# 优先使用 DHCP 分配的 IP，如果 DHCP 失败则使用下面的静态配置
-#Address=${static_ip}/24
-#Gateway=10.0.0.1
-#DNS=10.0.0.1
+# 静态 IP 配置
+lxc.net.0.ipv4.address = ${static_ip}/24
+lxc.net.0.ipv4.gateway = 10.0.0.1
 EOF
     
-    # 或者使用传统的 /etc/network/interfaces 方式（Debian）
-    local interfaces_file="/var/lib/lxc/$target/rootfs/etc/network/interfaces"
-    if [ -f "$interfaces_file" ]; then
-        # 备份原文件
-        cp "$interfaces_file" "${interfaces_file}.bak"
-        
-        # 配置 DHCP（让 dnsmasq 分配静态 IP）
-        cat > "$interfaces_file" << EOF
-auto lo
-iface lo inet loopback
-
-auto eth0
-iface eth0 inet dhcp
-    hostname ${target}
+    print_success "容器配置已更新"
+    
+    # 配置容器内的 DNS
+    print_info "配置容器 DNS..."
+    
+    local resolv_conf="/var/lib/lxc/$target/rootfs/etc/resolv.conf"
+    
+    # 备份原 resolv.conf
+    if [ -f "$resolv_conf" ] && [ ! -L "$resolv_conf" ]; then
+        cp "$resolv_conf" "${resolv_conf}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+    fi
+    
+    # 删除符号链接（如果存在）
+    if [ -L "$resolv_conf" ]; then
+        rm -f "$resolv_conf"
+    fi
+    
+    # 创建新的 resolv.conf
+    cat > "$resolv_conf" << EOF
+# LXC 静态配置
+nameserver 10.0.0.1
+nameserver 8.8.8.8
+nameserver 8.8.4.4
+search lxc
 EOF
-    fi
     
-    # 重启 lxc-net 服务
-    print_info "重启 LXC 网络服务..."
-    systemctl restart lxc-net
+    # 防止被覆盖（可选）
+    chattr +i "$resolv_conf" 2>/dev/null || true
     
-    # 等待服务启动
-    sleep 3
+    print_success "DNS 配置已更新"
     
-    # 检查 dnsmasq 进程
-    if ! pgrep -f "dnsmasq.*lxcbr0" > /dev/null; then
-        print_error "dnsmasq 未正常运行"
-        print_info "尝试手动启动..."
-        systemctl restart lxc-net
-        sleep 2
-    fi
-    
-    # 启动容器
-    if [ "$was_running" = true ]; then
-        print_info "启动容器..."
-        lxc-start -n "$target"
-        sleep 5
-    else
-        print_info "请手动启动容器以应用配置"
-    fi
-    
-    print_success "静态 IP ${static_ip} 配置完成"
     echo ""
-    print_info "配置信息："
+    print_success "静态 IP 配置完成"
+    echo ""
+    print_info "配置摘要："
     echo "  容器名称: $target"
     echo "  MAC 地址: $container_mac"
-    echo "  静态 IP: $static_ip"
-    echo "  配置文件: /etc/lxc/dnsmasq.conf"
+    echo "  静态 IP: $static_ip/24"
+    echo "  网关: 10.0.0.1"
+    echo "  DNS: 10.0.0.1, 8.8.8.8, 8.8.4.4"
     echo ""
     
-    # 显示 dnsmasq 配置
-    print_info "当前 dnsmasq 静态绑定："
-    grep "^dhcp-host=" /etc/lxc/dnsmasq.conf 2>/dev/null || echo "  无"
+    # 显示配置文件
+    print_info "LXC 网络配置："
+    grep -E "lxc.net.0.(ipv4|hwaddr)" "$config_file"
     echo ""
     
-    # 验证容器 IP
+    # 询问是否启动容器
     if [ "$was_running" = true ]; then
-        sleep 3
-        local current_ip=$(get_container_ip "$target")
-        echo "当前容器 IP: $current_ip"
-        
-        if [ "$current_ip" = "$static_ip" ]; then
-            print_success "静态 IP 分配成功！"
-        else
-            print_warning "IP 地址不匹配，可能需要重启容器"
+        read -p "是否启动容器？[Y/n]: " start_confirm
+        if [[ ! "$start_confirm" =~ ^[Nn]$ ]]; then
+            print_info "启动容器..."
+            lxc-start -n "$target"
+            
+            # 等待容器启动
+            sleep 3
+            
+            # 验证 IP 地址
+            print_info "验证网络配置..."
+            sleep 2
+            
+            local current_ip=$(lxc-attach -n "$target" -- ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+            
+            if [ "$current_ip" = "$static_ip" ]; then
+                print_success "✓ IP 地址配置成功: $current_ip"
+            else
+                print_warning "⚠ IP 地址不匹配"
+                echo "  期望: $static_ip"
+                echo "  实际: ${current_ip:-无}"
+            fi
+            
+            # 测试连通性
             echo ""
-            read -p "是否重启容器？[Y/n]: " restart_confirm
-            if [[ ! "$restart_confirm" =~ ^[Nn]$ ]]; then
-                lxc-stop -n "$target" -k
-                sleep 2
-                lxc-start -n "$target"
-                print_info "容器已重启，请稍后检查 IP"
+            read -p "是否测试网络连通性？[y/N]: " test_network
+            if [[ "$test_network" =~ ^[Yy]$ ]]; then
+                print_info "测试网关连通性..."
+                if lxc-attach -n "$target" -- ping -c 2 10.0.0.1 &>/dev/null; then
+                    print_success "✓ 网关连通"
+                else
+                    print_error "✗ 网关不通"
+                fi
+                
+                print_info "测试外网连通性..."
+                if lxc-attach -n "$target" -- ping -c 2 8.8.8.8 &>/dev/null; then
+                    print_success "✓ 外网连通"
+                else
+                    print_error "✗ 外网不通"
+                fi
+                
+                print_info "测试 DNS 解析..."
+                if lxc-attach -n "$target" -- ping -c 2 www.google.com &>/dev/null; then
+                    print_success "✓ DNS 解析正常"
+                else
+                    print_error "✗ DNS 解析失败"
+                fi
             fi
         fi
+    else
+        print_info "容器已停止，请手动启动以应用配置"
     fi
+    
+    echo ""
+    print_info "提示："
+    echo "  - 配置已保存，重启容器后生效"
+    echo "  - 不会影响其他容器的网络"
+    echo "  - LXC 会自动配置容器内的网络接口"
     
     press_enter
 }
+
 
 
 toggle_privileged() {
