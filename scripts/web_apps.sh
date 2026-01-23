@@ -856,17 +856,32 @@ install_ttrss() {
     ensure_config_dirs
     
     # 检测 PostgreSQL 端口
+    echo ""
     print_info "检测 PostgreSQL 配置..."
+    
     local detected_pg_port=$(sudo -u postgres psql -t -c "SHOW port;" 2>/dev/null | tr -d ' ')
     
     if [ -z "$detected_pg_port" ]; then
         print_warning "无法检测 PostgreSQL 端口，使用默认值 5432"
         detected_pg_port="5432"
     else
-        print_success "检测到 PostgreSQL 端口: $detected_pg_port"
+        print_success "PostgreSQL 端口: $detected_pg_port"
+    fi
+    
+    # 检查 PostgreSQL 是否在监听该端口
+    if netstat -tuln 2>/dev/null | grep -q ":${detected_pg_port}.*LISTEN" || \
+       ss -tuln 2>/dev/null | grep -q ":${detected_pg_port}.*LISTEN"; then
+        print_success "PostgreSQL 正在监听端口 ${detected_pg_port}"
+    else
+        print_warning "PostgreSQL 可能未在端口 ${detected_pg_port} 监听"
+        echo ""
+        print_info "检查命令："
+        echo "  sudo netstat -tulnp | grep postgres"
+        echo "  sudo ss -tulnp | grep postgres"
     fi
     
     # 配置参数
+    echo ""
     read -p "域名 (如: rss.example.com): " domain
     if [ -z "$domain" ]; then
         print_error "域名不能为空"
@@ -982,21 +997,6 @@ install_ttrss() {
     
     read -p "数据库端口 (默认: ${db_port}): " custom_db_port
     db_port=${custom_db_port:-$db_port}
-    
-    # 验证端口是否正确
-    if ! sudo -u postgres psql -h 127.0.0.1 -p "$db_port" -c "\q" 2>/dev/null; then
-        print_warning "无法连接到端口 ${db_port}，请检查 PostgreSQL 配置"
-        echo ""
-        print_info "可用的检查命令："
-        echo "  sudo -u postgres psql -c 'SHOW port;'"
-        echo "  sudo netstat -tulnp | grep postgres"
-        echo ""
-        read -p "是否继续？[y/N]: " continue_anyway
-        if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
-            press_enter
-            return
-        fi
-    fi
     
     # 更新守护进程配置
     echo ""
@@ -1419,9 +1419,6 @@ PostgreSQL 检测
 连接数据库:
   sudo -u postgres psql -d ${db_name}
 
-测试数据库连接:
-  sudo -u postgres psql -h 127.0.0.1 -p ${db_port} -d ${db_name} -c "SELECT version();"
-
 查看订阅统计:
   sudo -u postgres psql -d ${db_name} -c "SELECT COUNT(*) FROM ttrss_feeds;"
 
@@ -1488,20 +1485,7 @@ PostgreSQL 检测
      cat ${install_dir}/config.php
   
   3. 检查数据库连接:
-     sudo -u postgres psql -h 127.0.0.1 -p ${db_port} -d ${db_name} -c "SELECT version();"
-
-如果数据库连接失败：
-  1. 检查 PostgreSQL 端口:
-     sudo -u postgres psql -c "SHOW port;"
-  
-  2. 检查监听地址:
-     sudo -u postgres psql -c "SHOW listen_addresses;"
-  
-  3. 检查 pg_hba.conf:
-     cat /etc/postgresql/*/main/pg_hba.conf | grep "^host"
-  
-  4. 确保允许本地连接:
-     host    all    all    127.0.0.1/32    md5
+     sudo -u postgres psql -d ${db_name} -c "SELECT version();"
 
 如果页面无法访问：
   1. 检查 Web 服务: systemctl status ${SERVICE_NAME}
