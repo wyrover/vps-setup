@@ -467,6 +467,9 @@ EOF
     
     local resolv_conf="/var/lib/lxc/$target/rootfs/etc/resolv.conf"
     
+    # **关键修复：先解除文件锁定**
+    chattr -i "$resolv_conf" 2>/dev/null || true
+    
     # 备份原 resolv.conf
     if [ -f "$resolv_conf" ] && [ ! -L "$resolv_conf" ]; then
         cp "$resolv_conf" "${resolv_conf}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
@@ -478,17 +481,21 @@ EOF
     fi
     
     # 创建新的 resolv.conf（使用公共 DNS）
-    cat > "$resolv_conf" << EOF
+    cat > "$resolv_conf" << 'EOF'
 # LXC 静态 DNS 配置
 nameserver 8.8.8.8
 nameserver 8.8.4.4
 nameserver 1.1.1.1
 EOF
     
-    # 防止被覆盖（可选）
-    chattr +i "$resolv_conf" 2>/dev/null || true
-    
-    print_success "DNS 配置已更新"
+    # **关键修复：锁定文件前先检查是否成功写入**
+    if [ $? -eq 0 ]; then
+        # 防止被覆盖（可选）
+        chattr +i "$resolv_conf" 2>/dev/null || true
+        print_success "DNS 配置已更新并锁定"
+    else
+        print_error "DNS 配置写入失败"
+    fi
     
     echo ""
     print_success "静态 IP 配置完成"
@@ -504,6 +511,10 @@ EOF
     # 显示配置文件
     print_info "LXC 网络配置："
     grep -E "lxc.net.0.(ipv4|hwaddr)" "$config_file"
+    echo ""
+    
+    print_info "DNS 配置："
+    cat "$resolv_conf"
     echo ""
     
     # 询问是否启动容器
@@ -565,9 +576,11 @@ EOF
     echo "  - 配置已保存，重启容器后生效"
     echo "  - 不会影响其他容器的网络"
     echo "  - LXC 会自动配置容器内的网络接口"
+    echo "  - resolv.conf 已锁定，防止被覆盖"
     
     press_enter
 }
+
 
 
 
