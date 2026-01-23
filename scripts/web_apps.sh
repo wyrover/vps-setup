@@ -995,11 +995,11 @@ install_ttrss() {
     if [ "$overwrite_install" = true ]; then
         # 创建数据库
         echo ""
-        print_info "[1/7] 创建数据库..."
+        print_info "[1/6] 创建数据库..."
         create_postgresql_db "$db_name" "$db_user" "$db_pass"
         
         # 下载 Tiny Tiny RSS
-        print_info "[2/7] 下载 Tiny Tiny RSS..."
+        print_info "[2/6] 下载 Tiny Tiny RSS..."
         mkdir -p "$install_dir"
         cd /tmp
         rm -rf tt-rss
@@ -1021,7 +1021,7 @@ install_ttrss() {
     fi
     
     # 配置 Tiny Tiny RSS (使用 putenv 方式)
-    print_info "[${step_num}/7] 配置 Tiny Tiny RSS..."
+    print_info "[${step_num}/6] 配置 Tiny Tiny RSS..."
     cd "$install_dir"
     
     # 创建新的配置文件（使用 putenv）
@@ -1054,7 +1054,7 @@ putenv('TTRSS_SIMPLE_UPDATE_MODE=true');
 // 禁用注册（可选）
 // putenv('TTRSS_ENABLE_REGISTRATION=false');
 
-// Session cookie 名称
+// Session cookie 生命周期
 putenv('TTRSS_SESSION_COOKIE_LIFETIME=86400');
 
 // 锁目录
@@ -1067,7 +1067,7 @@ putenv('TTRSS_CACHE_DIR=cache');
 putenv('TTRSS_ICONS_DIR=feed-icons');
 putenv('TTRSS_ICONS_URL=feed-icons');
 
-// 日志级别
+// 日志级别（可选）
 // putenv('TTRSS_LOG_LEVEL=E_ALL');
 ?>
 TTRSSCONFIG
@@ -1081,27 +1081,8 @@ TTRSSCONFIG
     
     ((step_num++))
     
-    # 初始化数据库（仅全新安装）
-    if [ "$overwrite_install" = true ]; then
-        print_info "[${step_num}/7] 初始化数据库..."
-        
-        # 检查 schema 文件
-        if [ -f "schema/ttrss_schema_pgsql.sql" ]; then
-            sudo -u postgres psql -d "$db_name" < schema/ttrss_schema_pgsql.sql 2>/dev/null
-            if [ $? -eq 0 ]; then
-                print_success "数据库初始化成功"
-            else
-                print_warning "数据库初始化可能失败，请稍后访问 Web 界面检查"
-            fi
-        else
-            print_warning "未找到 schema 文件，数据库将在首次访问时自动初始化"
-        fi
-        
-        ((step_num++))
-    fi
-    
-    # 设置权限
-    print_info "[${step_num}/7] 设置文件权限..."
+    # 设置文件权限
+    print_info "[${step_num}/6] 设置文件权限..."
     chown -R www-data:www-data "$install_dir"
     chmod -R 755 "$install_dir"
     
@@ -1112,8 +1093,66 @@ TTRSSCONFIG
     
     ((step_num++))
     
+    # 初始化数据库结构
+    print_info "[${step_num}/6] 初始化数据库结构..."
+    cd "$install_dir"
+    
+    # 确保 update.php 存在
+    if [ ! -f "update.php" ]; then
+        print_error "update.php 不存在！"
+        press_enter
+        return
+    fi
+    
+    # 使用 update.php 初始化数据库
+    print_info "执行数据库结构初始化（可能需要几分钟）..."
+    sudo -u www-data php update.php --update-schema=force 2>&1 | tee /tmp/ttrss-update.log
+    
+    if [ ${PIPESTATUS[0]} -eq 0 ]; then
+        print_success "数据库结构初始化成功"
+    else
+        print_error "数据库结构初始化失败"
+        echo ""
+        print_info "错误日志："
+        cat /tmp/ttrss-update.log
+        echo ""
+        print_warning "你可能需要检查："
+        echo "  1. 数据库连接是否正常"
+        echo "  2. 配置文件是否正确: $install_dir/config.php"
+        echo "  3. PostgreSQL 是否运行"
+        echo ""
+        print_info "手动修复命令："
+        echo "  cd $install_dir"
+        echo "  sudo -u www-data php update.php --update-schema=force"
+        echo ""
+        read -p "是否继续安装？[y/N]: " continue_install
+        if [[ ! "$continue_install" =~ ^[Yy]$ ]]; then
+            press_enter
+            return
+        fi
+    fi
+    
+    # 验证数据库表是否创建成功
+    print_info "验证数据库表..."
+    local table_count=$(sudo -u postgres psql -d "$db_name" -t -c \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';" 2>/dev/null | tr -d ' ')
+    
+    if [ -n "$table_count" ] && [ "$table_count" -gt 0 ]; then
+        print_success "数据库包含 ${table_count} 个表"
+    else
+        print_error "数据库表创建失败！"
+        echo ""
+        print_warning "请手动执行以下命令初始化数据库："
+        echo "  cd $install_dir"
+        echo "  sudo -u www-data php update.php --update-schema=force"
+        echo ""
+        read -p "按 Enter 继续..."
+    fi
+    
+    ((step_num++))
+    
     # 生成 SSL 证书
-    print_info "[${step_num}/7] 生成 SSL 证书..."
+    print_info "[${step_num}/6] 生成 SSL 证书..."
     local ssl_files=$(generate_ssl_cert "$domain")
     local ssl_cert=$(echo "$ssl_files" | cut -d: -f1)
     local ssl_key=$(echo "$ssl_files" | cut -d: -f2)
@@ -1121,7 +1160,7 @@ TTRSSCONFIG
     ((step_num++))
     
     # 创建 Web 服务器配置
-    print_info "[${step_num}/7] 配置 ${WEB_SERVER}..."
+    print_info "[${step_num}/6] 配置 ${WEB_SERVER}..."
     cat > "${SITES_AVAIL}/${domain}.conf" << TTRSSCONF
 server {
     listen 80;
@@ -1189,7 +1228,7 @@ TTRSSCONF
     ((step_num++))
     
     # 配置更新守护进程
-    print_info "[${step_num}/7] 配置更新守护进程..."
+    print_info "[${step_num}/6] 配置更新守护进程..."
     
     cat > /etc/systemd/system/ttrss-update.service << TTRSSSERVICE
 [Unit]
@@ -1295,6 +1334,21 @@ SSL 密钥: ${ssl_key}
 重启 Web 服务:
   systemctl reload ${SERVICE_NAME}
 
+数据库管理
+----------
+初始化/更新数据库结构:
+  cd ${install_dir}
+  sudo -u www-data php update.php --update-schema=force
+
+检查数据库表:
+  sudo -u postgres psql -d ${db_name} -c "\dt"
+
+查看表数量:
+  sudo -u postgres psql -d ${db_name} -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'public';"
+
+连接数据库:
+  sudo -u postgres psql -d ${db_name}
+
 首次设置步骤
 ------------
 1. 访问: https://${domain}
@@ -1315,15 +1369,30 @@ SSL 密钥: ${ssl_key}
 
 故障排查
 --------
+如果出现 "Base database schema is missing" 错误：
+  1. 手动初始化数据库:
+     cd ${install_dir}
+     sudo -u www-data php update.php --update-schema=force
+  
+  2. 检查配置文件:
+     cat ${install_dir}/config.php
+  
+  3. 检查数据库连接:
+     sudo -u postgres psql -d ${db_name} -c "SELECT version();"
+  
+  4. 检查数据库表:
+     sudo -u postgres psql -d ${db_name} -c "\dt"
+
 如果页面无法访问：
   1. 检查 Web 服务: systemctl status ${SERVICE_NAME}
   2. 检查 PHP-FPM: systemctl status php*-fpm
-  3. 检查错误日志
+  3. 检查错误日志: tail -f /var/log/${WEB_SERVER}/${domain}.error.log
 
 如果 Feed 不更新：
   1. 检查更新服务: systemctl status ttrss-update
-  2. 查看更新日志: journalctl -u ttrss-update
-  3. 确认数据库连接正常
+  2. 查看更新日志: journalctl -u ttrss-update -f
+  3. 手动运行更新: cd ${install_dir} && sudo -u www-data php update.php --feeds
+  4. 确认数据库连接正常
 
 备份建议
 --------
@@ -1336,13 +1405,23 @@ SSL 密钥: ${ssl_key}
 3. 完整备份:
    tar czf ttrss-full-\$(date +%F).tar.gz ${install_dir}
 
+4. 恢复数据库:
+   sudo -u postgres psql -d ${db_name} < ttrss-backup-YYYY-MM-DD.sql
+
 安全提示
 --------
 ⚠️  立即修改默认密码！
 ⚠️  定期备份数据库
 ⚠️  保护好数据库密码
 ⚠️  使用 HTTPS 访问
-⚠️  定期更新 TTRSS
+⚠️  定期更新 TTRSS: cd ${install_dir} && git pull
+
+更新 TTRSS
+----------
+1. 备份数据库和配置
+2. 更新代码: cd ${install_dir} && sudo -u www-data git pull
+3. 更新数据库: sudo -u www-data php update.php --update-schema
+4. 重启服务: systemctl restart ttrss-update
 
 ========================================
 INFO
