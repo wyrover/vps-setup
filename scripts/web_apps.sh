@@ -1795,6 +1795,10 @@ INFO
 # 配置 Rclone 挂载
 # ============================================
 
+# ============================================
+# 配置 Rclone 挂载
+# ============================================
+
 install_rclone() {
     clear
     echo "=========================================="
@@ -1804,7 +1808,62 @@ install_rclone() {
     
     check_root || return
     
+    # 检查是否在 LXC 容器中
+    local in_lxc=false
+    if [ -f "/proc/1/environ" ] && grep -qa "container=lxc" /proc/1/environ 2>/dev/null; then
+        in_lxc=true
+    elif grep -q "lxc" /proc/1/cgroup 2>/dev/null; then
+        in_lxc=true
+    fi
+    
+    if [ "$in_lxc" = true ]; then
+        print_warning "检测到 LXC 容器环境"
+        echo ""
+        print_info "LXC 容器使用 FUSE 需要在宿主机上执行以下操作："
+        echo ""
+        echo "1. 获取容器 ID："
+        echo "   ${CYAN}pct list${NC}"
+        echo ""
+        echo "2. 为容器启用 FUSE 特性（在宿主机执行）："
+        echo "   ${GREEN}pct set <VMID> -features fuse=1${NC}"
+        echo ""
+        echo "3. 重启容器（在宿主机执行）："
+        echo "   ${GREEN}pct reboot <VMID>${NC}"
+        echo "   或者"
+        echo "   ${GREEN}pct stop <VMID> && pct start <VMID>${NC}"
+        echo ""
+        echo "4. 验证配置（在宿主机执行）："
+        echo "   ${CYAN}pct config <VMID> | grep features${NC}"
+        echo "   应该显示: features: fuse=1"
+        echo ""
+        print_warning "注意：必须重启容器才能生效！"
+        echo ""
+        
+        # 检查 /dev/fuse 是否存在
+        if [ ! -e "/dev/fuse" ]; then
+            print_error "/dev/fuse 设备不存在"
+            echo ""
+            print_info "这表明宿主机尚未为此容器启用 FUSE"
+            echo ""
+            read -p "是否已在宿主机上执行上述操作？[y/N]: " fuse_configured
+            if [[ ! "$fuse_configured" =~ ^[Yy]$ ]]; then
+                print_info "请先在宿主机上配置 FUSE，然后重新运行此脚本"
+                echo ""
+                print_info "快速操作（在宿主机执行）："
+                echo "  1. 查看容器列表: pct list"
+                echo "  2. 启用 FUSE: pct set <VMID> -features fuse=1"
+                echo "  3. 重启容器: pct reboot <VMID>"
+                press_enter
+                return
+            fi
+        else
+            print_success "/dev/fuse 设备存在"
+            ls -l /dev/fuse
+        fi
+    fi
+    
     # 检查并安装依赖
+    echo ""
     print_info "检查依赖..."
     
     # 安装 fuse3
@@ -1813,6 +1872,102 @@ install_rclone() {
         apt-get update -qq && apt-get install -y fuse3
     else
         print_success "fuse3 已安装"
+    fi
+    
+    # 检查并加载 FUSE 内核模块
+    print_info "检查 FUSE 内核模块..."
+    if ! lsmod | grep -q "^fuse"; then
+        print_warning "FUSE 内核模块未加载"
+        print_info "加载 FUSE 模块..."
+        
+        if modprobe fuse 2>/dev/null; then
+            print_success "FUSE 模块加载成功"
+        else
+            # 在 LXC 中，模块可能由宿主机加载
+            if [ "$in_lxc" = true ]; then
+                print_info "LXC 容器中 FUSE 模块由宿主机管理"
+                
+                # 检查 /dev/fuse 是否可用
+                if [ -c "/dev/fuse" ]; then
+                    print_success "FUSE 设备可用"
+                else
+                    print_error "FUSE 设备不可用"
+                    echo ""
+                    print_info "请在宿主机上执行："
+                    echo "  pct set <VMID> -features fuse=1"
+                    echo "  pct reboot <VMID>"
+                    echo ""
+                    read -p "是否继续尝试？[y/N]: " continue_anyway
+                    if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+                        press_enter
+                        return
+                    fi
+                fi
+            else
+                print_error "无法加载 FUSE 模块"
+                echo ""
+                print_info "检查命令："
+                echo "  lsmod | grep fuse"
+                echo "  ls -l /dev/fuse"
+                echo "  grep fuse /proc/filesystems"
+                echo ""
+                read -p "是否继续尝试？[y/N]: " continue_anyway
+                if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+                    press_enter
+                    return
+                fi
+            fi
+        fi
+    else
+        print_success "FUSE 模块已加载"
+    fi
+    
+    # 验证 FUSE 设备
+    if [ ! -e "/dev/fuse" ]; then
+        print_error "/dev/fuse 设备不存在"
+        
+        if [ "$in_lxc" = true ]; then
+            echo ""
+            print_error "LXC 容器未正确配置 FUSE"
+            echo ""
+            print_info "解决步骤（在宿主机执行）："
+            echo "  1. pct set <VMID> -features fuse=1"
+            echo "  2. pct reboot <VMID>"
+            echo ""
+            print_warning "必须重启容器！stop/start 或 reboot"
+            press_enter
+            return
+        else
+            print_info "尝试创建 FUSE 设备..."
+            if mknod /dev/fuse c 10 229 2>/dev/null; then
+                chmod 666 /dev/fuse
+                print_success "FUSE 设备创建成功"
+            else
+                print_error "无法创建 FUSE 设备"
+                press_enter
+                return
+            fi
+        fi
+    else
+        print_success "FUSE 设备存在: /dev/fuse"
+        
+        # 检查设备权限
+        local fuse_perms=$(ls -l /dev/fuse | awk '{print $1}')
+        if [[ "$fuse_perms" =~ rw.*rw ]]; then
+            print_success "FUSE 设备权限正常"
+        else
+            print_warning "FUSE 设备权限可能不足"
+            chmod 666 /dev/fuse 2>/dev/null || true
+        fi
+    fi
+    
+    # 配置 FUSE 模块开机自动加载（非 LXC 环境）
+    if [ "$in_lxc" = false ]; then
+        if ! grep -q "^fuse$" /etc/modules 2>/dev/null; then
+            print_info "配置 FUSE 模块开机自动加载..."
+            echo "fuse" >> /etc/modules
+            print_success "已添加到 /etc/modules"
+        fi
     fi
     
     # 安装 rclone
@@ -1852,13 +2007,22 @@ install_rclone() {
         print_success "Supervisor 已安装"
     fi
     
-    # 配置 fuse
+    # 配置 fuse.conf
     if ! grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null; then
         print_info "配置 FUSE..."
         echo "user_allow_other" >> /etc/fuse.conf
         print_success "FUSE 配置完成"
     else
         print_success "FUSE 已配置"
+    fi
+    
+    # 测试 FUSE 是否真的可用
+    echo ""
+    print_info "测试 FUSE 功能..."
+    if timeout 5 fusermount3 --version >/dev/null 2>&1; then
+        print_success "fusermount3 工作正常"
+    else
+        print_warning "fusermount3 测试超时或失败"
     fi
     
     # 配置参数
@@ -1953,6 +2117,7 @@ install_rclone() {
     
     echo ""
     print_info "挂载配置："
+    echo "  环境: $([ "$in_lxc" = true ] && echo 'LXC 容器' || echo '物理机/虚拟机')"
     echo "  远程: ${remote_name}:${remote_path}"
     echo "  挂载点: ${mount_point}"
     echo "  缓存目录: ${cache_dir}"
@@ -2006,6 +2171,8 @@ redirect_stderr=true
 stdout_logfile=/var/log/supervisor/${service_name}.log
 stdout_logfile_maxbytes=10MB
 stdout_logfile_backups=3
+startsecs=10
+startretries=3
 SUPERVISORCONF
         
         print_success "Supervisor 配置完成"
@@ -2014,26 +2181,42 @@ SUPERVISORCONF
         print_info "启动 rclone 挂载..."
         supervisorctl reread
         supervisorctl update
-        sleep 3
+        sleep 5
         
         # 检查状态
         if supervisorctl status "$service_name" | grep -q "RUNNING"; then
             print_success "rclone 挂载已启动"
             
             # 验证挂载点
-            if mountpoint -q "$mount_point"; then
+            sleep 2
+            if mountpoint -q "$mount_point" 2>/dev/null; then
                 print_success "挂载点验证成功: $mount_point"
                 echo ""
                 print_info "挂载内容："
-                ls -lh "$mount_point" | head -10
+                timeout 10 ls -lh "$mount_point" 2>/dev/null | head -10 || echo "列出内容超时或为空"
             else
-                print_warning "挂载点验证失败，请检查日志"
+                print_warning "挂载点验证失败"
+                echo ""
+                print_info "查看日志："
+                echo "  tail -30 /var/log/supervisor/${service_name}.log"
+                echo ""
+                tail -30 "/var/log/supervisor/${service_name}.log" 2>/dev/null || true
             fi
         else
             print_error "rclone 挂载启动失败"
             echo ""
+            print_info "查看状态："
+            supervisorctl status "$service_name"
+            echo ""
             print_info "查看日志："
             echo "  tail -f /var/log/supervisor/${service_name}.log"
+            echo ""
+            if [ -f "/var/log/supervisor/${service_name}.log" ]; then
+                tail -30 "/var/log/supervisor/${service_name}.log"
+            fi
+            echo ""
+            print_info "手动测试挂载："
+            echo "  ${RCLONE_CMD} --verbose"
         fi
     else
         print_warning "Supervisor 未安装，无法自动启动"
@@ -2050,6 +2233,24 @@ Rclone 挂载信息
 ========================================
 
 配置时间: $(date)
+运行环境: $([ "$in_lxc" = true ] && echo 'LXC 容器' || echo '物理机/虚拟机')
+
+$([ "$in_lxc" = true ] && cat << LXC_INFO
+
+LXC 容器配置
+------------
+FUSE 特性已启用（在宿主机配置）
+重要：修改 FUSE 配置后必须重启容器
+
+检查 FUSE 配置（在宿主机执行）:
+  pct config <VMID> | grep features
+
+如需禁用 FUSE:
+  pct set <VMID> -features fuse=0
+  pct reboot <VMID>
+
+LXC_INFO
+)
 
 挂载配置
 --------
@@ -2098,6 +2299,8 @@ Supervisor 服务
 
 手动卸载:
   fusermount -u ${mount_point}
+  或
+  fusermount3 -u ${mount_point}
 
 检查挂载
 --------
@@ -2109,6 +2312,10 @@ Supervisor 服务
 
 测试读取:
   rclone lsd ${remote_name}:${remote_path}
+
+检查 FUSE 设备:
+  ls -l /dev/fuse
+  lsmod | grep fuse
 
 缓存管理
 --------
@@ -2153,12 +2360,27 @@ Rclone 配置
 
 故障排查
 --------
+$([ "$in_lxc" = true ] && cat << LXC_TROUBLESHOOT
+
+LXC 容器特定问题:
+  1. FUSE 设备不存在:
+     在宿主机执行: pct set <VMID> -features fuse=1
+     重启容器: pct reboot <VMID>
+  
+  2. 挂载失败 "fuse device not found":
+     检查 /dev/fuse 是否存在
+     确认容器已重启生效
+     在宿主机检查: pct config <VMID> | grep features
+
+LXC_TROUBLESHOOT
+)
+
 如果挂载失败:
   1. 检查日志: tail -f /var/log/supervisor/rclone-${remote_name}.log
   2. 验证配置: rclone config show
   3. 测试连接: rclone lsd ${remote_name}:
   4. 手动挂载: ${RCLONE_CMD} --verbose
-  5. 检查 fuse: cat /etc/fuse.conf | grep user_allow_other
+  5. 检查 FUSE: ls -l /dev/fuse
 
 如果性能慢:
   1. 检查网络: ping -c 5 8.8.8.8
@@ -2195,6 +2417,7 @@ Rclone 配置
 ⚠️  定期检查缓存大小，避免磁盘占满
 ⚠️  使用 HTTPS 传输确保数据安全
 ⚠️  定期更新 rclone 到最新版本
+$([ "$in_lxc" = true ] && echo "⚠️  LXC 容器备份前请先卸载 rclone")
 
 更新 rclone
 -----------
@@ -2218,6 +2441,20 @@ INFO
     echo "=========================================="
     echo ""
     print_info "信息已保存到: $info_file"
+    
+    # 显示 FUSE 状态
+    echo ""
+    print_info "FUSE 状态检查："
+    echo "  运行环境: $([ "$in_lxc" = true ] && echo 'LXC 容器' || echo '物理机/虚拟机')"
+    echo "  设备文件: $(ls -l /dev/fuse 2>/dev/null | awk '{print $1, $5, $6}' || echo '不存在')"
+    echo "  fusermount: $(which fusermount3 2>/dev/null || echo '未安装')"
+    
+    if [ "$in_lxc" = true ]; then
+        echo ""
+        print_warning "LXC 提示：如遇问题，请在宿主机确认："
+        echo "  pct config <VMID> | grep features"
+        echo "  应显示: features: fuse=1"
+    fi
     
     press_enter
 }
