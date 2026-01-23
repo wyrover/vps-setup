@@ -363,6 +363,7 @@ create_debian12() {
     press_enter
 }
 
+
 set_static_ip() {
     clear
     echo "=========================================="
@@ -476,13 +477,12 @@ EOF
         rm -f "$resolv_conf"
     fi
     
-    # 创建新的 resolv.conf
+    # 创建新的 resolv.conf（使用公共 DNS）
     cat > "$resolv_conf" << EOF
-# LXC 静态配置
-nameserver 10.0.0.1
+# LXC 静态 DNS 配置
 nameserver 8.8.8.8
 nameserver 8.8.4.4
-search lxc
+nameserver 1.1.1.1
 EOF
     
     # 防止被覆盖（可选）
@@ -498,7 +498,7 @@ EOF
     echo "  MAC 地址: $container_mac"
     echo "  静态 IP: $static_ip/24"
     echo "  网关: 10.0.0.1"
-    echo "  DNS: 10.0.0.1, 8.8.8.8, 8.8.4.4"
+    echo "  DNS: 8.8.8.8, 8.8.4.4, 1.1.1.1"
     echo ""
     
     # 显示配置文件
