@@ -2508,6 +2508,548 @@ INFO
 
 
 
+# ============================================
+# 安装 Copyparty 文件服务器
+# ============================================
+
+install_copyparty() {
+    clear
+    echo "=========================================="
+    echo "   安装 Copyparty 文件服务器"
+    echo "=========================================="
+    echo ""
+    
+    check_root || return
+    init_webserver_config
+    ensure_tools
+    
+    # 检查 Web 服务器
+    if [ "$WEB_SERVER" = "none" ]; then
+        print_error "未检测到 Web 服务器 (Nginx/OpenResty)"
+        echo ""
+        print_info "Copyparty 需要反向代理，请先安装 Web 服务器"
+        press_enter
+        return
+    fi
+    
+    ensure_config_dirs
+    
+    # 检查 Python3
+    if ! command -v python3 &> /dev/null; then
+        print_warning "Python3 未安装"
+        read -p "是否安装 Python3？[Y/n]: " install_python
+        if [[ ! "$install_python" =~ ^[Nn]$ ]]; then
+            apt-get update -qq && apt-get install -y python3 python3-pip
+        else
+            print_error "Python3 是必需的"
+            press_enter
+            return
+        fi
+    fi
+    
+    # 检查 Supervisor
+    if ! command -v supervisorctl >/dev/null 2>&1; then
+        print_warning "Supervisor 未安装"
+        read -p "是否安装 Supervisor？[Y/n]: " install_supervisor
+        if [[ ! "$install_supervisor" =~ ^[Nn]$ ]]; then
+            apt-get update -qq && apt-get install -y supervisor
+            systemctl enable supervisor
+            systemctl start supervisor
+        else
+            print_error "Supervisor 是必需的"
+            press_enter
+            return
+        fi
+    fi
+    
+    # 配置参数
+    echo ""
+    read -p "域名 (如: files.example.com): " domain
+    if [ -z "$domain" ]; then
+        print_error "域名不能为空"
+        press_enter
+        return
+    fi
+    
+    local install_dir="${WEB_ROOT}/copyparty"
+    local data_dir="/data/copyparty"
+    local cache_dir="/var/cache/copyparty"
+    local share_dir="/mnt"
+    local listen_port="3923"
+    local admin_user="admin"
+    local admin_pass=""
+    
+    # 检查是否已存在
+    if [ -d "$install_dir" ]; then
+        echo ""
+        print_warning "Copyparty 已安装在: $install_dir"
+        echo -n "是否覆盖安装? (yes/no): "
+        read -r overwrite
+        if [[ "$overwrite" != "yes" ]]; then
+            print_info "已取消"
+            press_enter
+            return
+        fi
+        
+        # 停止服务
+        supervisorctl stop copyparty 2>/dev/null || true
+        
+        # 备份
+        backup_site "$install_dir"
+        
+        # 删除旧配置
+        remove_site "$domain"
+        rm -rf "$install_dir"
+        rm -f /etc/supervisor/conf.d/copyparty.conf
+    fi
+    
+    # 配置参数
+    echo ""
+    print_info "Copyparty 配置"
+    
+    read -p "数据目录 (默认: ${data_dir}): " custom_data_dir
+    data_dir=${custom_data_dir:-$data_dir}
+    
+    read -p "缓存目录 (默认: ${cache_dir}): " custom_cache_dir
+    cache_dir=${custom_cache_dir:-$cache_dir}
+    
+    read -p "共享目录 (默认: ${share_dir}): " custom_share_dir
+    share_dir=${custom_share_dir:-$share_dir}
+    
+    read -p "监听端口 (默认: ${listen_port}): " custom_port
+    listen_port=${custom_port:-$listen_port}
+    
+    read -p "管理员用户名 (默认: ${admin_user}): " custom_admin
+    admin_user=${custom_admin:-$admin_user}
+    
+    read -sp "管理员密码 (留空自动生成): " admin_pass
+    echo ""
+    
+    if [ -z "$admin_pass" ]; then
+        admin_pass=$(generate_password 12)
+        print_info "生成的密码: $admin_pass"
+    fi
+    
+    echo ""
+    print_info "安装配置："
+    echo "  Web 服务器: ${WEB_SERVER}"
+    echo "  域名: ${domain}"
+    echo "  安装目录: ${install_dir}"
+    echo "  数据目录: ${data_dir}"
+    echo "  缓存目录: ${cache_dir}"
+    echo "  共享目录: ${share_dir}"
+    echo "  监听端口: ${listen_port}"
+    echo "  管理员: ${admin_user}"
+    echo ""
+    
+    read -p "确认安装？[Y/n]: " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "已取消"
+        press_enter
+        return
+    fi
+    
+    # 安装媒体依赖
+    echo ""
+    print_info "[1/7] 安装媒体依赖..."
+    apt-get update -qq
+    apt-get install -y ffmpeg python3-mutagen python3-pillow
+    print_success "媒体依赖安装完成"
+    
+    # 创建目录
+    print_info "[2/7] 创建目录..."
+    mkdir -p "$install_dir"
+    mkdir -p "$data_dir"
+    mkdir -p "$cache_dir"
+    mkdir -p "$share_dir"
+    
+    chown -R www-data:www-data "$data_dir"
+    chown -R www-data:www-data "$cache_dir"
+    chmod -R 755 "$data_dir"
+    chmod -R 755 "$cache_dir"
+    
+    print_success "目录创建完成"
+    
+    # 下载 Copyparty
+    print_info "[3/7] 下载 Copyparty..."
+    cd /tmp
+    rm -f copyparty.py
+    
+    if wget -q --show-progress "https://github.com/9001/copyparty/releases/latest/download/copyparty-sfx.py" -O copyparty.py; then
+        if [ ! -s "copyparty.py" ]; then
+            print_error "下载的文件为空"
+            press_enter
+            return
+        fi
+        
+        mv copyparty.py "${install_dir}/"
+        chmod +x "${install_dir}/copyparty.py"
+        chown -R www-data:www-data "$install_dir"
+        print_success "Copyparty 下载完成"
+    else
+        print_error "下载失败"
+        press_enter
+        return
+    fi
+    
+    # 创建 Supervisor 配置
+    print_info "[4/7] 配置 Supervisor..."
+    
+    cat > /etc/supervisor/conf.d/copyparty.conf << COPYCONF
+[program:copyparty]
+command=/usr/bin/nice -n 10 /usr/bin/python3 ${install_dir}/copyparty.py \
+    -i 127.0.0.1 \
+    -p ${listen_port} \
+    -a ${admin_user}:${admin_pass} \
+    -v ${share_dir}::A,${admin_user} \
+    -e2d \
+    -e2ts \
+    --hist ${cache_dir} \
+    -j 16 \
+    -nc 64 \
+    --no-acode \
+    --rproxy -1 \
+    --no-voldump \
+    --no-thumb \
+    --no-hash .* \
+    --no-clone \
+    --no-scandir \
+    --db-act 0
+directory=${install_dir}
+autostart=true
+autorestart=true
+user=www-data
+redirect_stderr=true
+stdout_logfile=/var/log/supervisor/copyparty.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=3
+environment=PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+startsecs=10
+startretries=3
+COPYCONF
+    
+    supervisorctl reread
+    supervisorctl update
+    print_success "Supervisor 配置完成"
+    
+    # 生成 SSL 证书
+    print_info "[5/7] 生成 SSL 证书..."
+    local ssl_files=$(generate_ssl_cert "$domain")
+    local ssl_cert=$(echo "$ssl_files" | cut -d: -f1)
+    local ssl_key=$(echo "$ssl_files" | cut -d: -f2)
+    
+    # 创建 Nginx 反向代理配置
+    print_info "[6/7] 配置 ${WEB_SERVER}..."
+    cat > "${SITES_AVAIL}/${domain}.conf" << COPYPROXYCONF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${domain};
+    return 301 https://\$server_name\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${domain};
+    
+    ssl_certificate ${ssl_cert};
+    ssl_certificate_key ${ssl_key};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    
+    access_log /var/log/${WEB_SERVER}/${domain}.access.log;
+    error_log /var/log/${WEB_SERVER}/${domain}.error.log;
+    
+    # 增加超时和缓冲区大小
+    client_max_body_size 10G;
+    client_body_buffer_size 512k;
+    
+    proxy_connect_timeout 600;
+    proxy_send_timeout 600;
+    proxy_read_timeout 600;
+    send_timeout 600;
+    
+    proxy_buffering off;
+    proxy_request_buffering off;
+    
+    location / {
+        proxy_pass http://127.0.0.1:${listen_port};
+        proxy_http_version 1.1;
+        
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        
+        # WebSocket 支持
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        
+        # 防止代理缓存
+        proxy_cache_bypass \$http_upgrade;
+    }
+    
+    # 静态资源缓存
+    location ~* \.(jpg|jpeg|png|gif|ico|css|js|svg|woff|woff2|ttf|eot)$ {
+        proxy_pass http://127.0.0.1:${listen_port};
+        expires 30d;
+        add_header Cache-Control "public, immutable";
+    }
+}
+COPYPROXYCONF
+    
+    mkdir -p "/var/log/${WEB_SERVER}"
+    ln -sf "${SITES_AVAIL}/${domain}.conf" "${SITES_ENABLED}/"
+    reload_webserver
+    
+    # 启动服务
+    print_info "[7/7] 启动 Copyparty..."
+    sleep 3
+    
+    if supervisorctl status copyparty | grep -q "RUNNING"; then
+        print_success "Copyparty 已启动"
+    else
+        print_warning "Copyparty 启动可能失败，请检查日志"
+        echo ""
+        print_info "查看日志："
+        echo "  tail -30 /var/log/supervisor/copyparty.log"
+        if [ -f "/var/log/supervisor/copyparty.log" ]; then
+            echo ""
+            tail -30 /var/log/supervisor/copyparty.log
+        fi
+    fi
+    
+    # 保存信息
+    cat > "${install_dir}/COPYPARTY-INFO.txt" << INFO
+========================================
+Copyparty 文件服务器安装信息
+========================================
+
+安装时间: $(date)
+
+Web 配置
+--------
+Web 服务器: ${WEB_SERVER}
+域名: ${domain}
+访问地址: https://${domain}
+安装目录: ${install_dir}
+
+服务配置
+--------
+监听地址: 127.0.0.1:${listen_port}
+数据目录: ${data_dir}
+缓存目录: ${cache_dir}
+共享目录: ${share_dir}
+
+管理员账号
+----------
+用户名: ${admin_user}
+密码: ${admin_pass}
+⚠️  请妥善保管！
+
+权限配置
+--------
+管理员权限: A (完全控制，包括删除/移动)
+共享目录权限: ${admin_user} 拥有完全访问权限
+
+性能优化
+--------
+✓ 禁用缩略图生成 (--no-thumb)
+✓ 禁用文件哈希 (--no-hash)
+✓ 禁用 scandir (--no-scandir)
+✓ 最小化数据库写入 (--db-act 0)
+✓ 高并发支持 (-j 16, -nc 64)
+✓ 降低 CPU 优先级 (nice -n 10)
+✓ 禁用代理缓存 (proxy_buffering off)
+
+配置文件
+--------
+Copyparty: ${install_dir}/copyparty.py
+Supervisor: /etc/supervisor/conf.d/copyparty.conf
+Web 服务器: ${SITES_AVAIL}/${domain}.conf
+SSL 证书: ${ssl_cert}
+SSL 密钥: ${ssl_key}
+
+日志文件
+--------
+Copyparty: /var/log/supervisor/copyparty.log
+Web 访问: /var/log/${WEB_SERVER}/${domain}.access.log
+Web 错误: /var/log/${WEB_SERVER}/${domain}.error.log
+
+管理命令
+--------
+查看服务状态:
+  supervisorctl status copyparty
+
+启动服务:
+  supervisorctl start copyparty
+
+停止服务:
+  supervisorctl stop copyparty
+
+重启服务:
+  supervisorctl restart copyparty
+
+查看日志（实时）:
+  tail -f /var/log/supervisor/copyparty.log
+
+查看日志（最近）:
+  tail -100 /var/log/supervisor/copyparty.log
+
+重启 Web 服务:
+  systemctl reload ${SERVICE_NAME}
+
+功能说明
+--------
+1. 管理员拥有完全控制权（上传、下载、删除、移动）
+2. 支持文件上传、下载、在线预览
+3. 支持音频/视频/图片预览（需 FFmpeg）
+4. 支持文件搜索和标签
+5. 支持文件分享链接
+6. 支持批量操作
+7. 零 IO 优化，适合挂载的网络存储
+
+使用指南
+--------
+1. 访问 https://${domain}
+2. 使用管理员账号登录
+3. 上传/管理文件
+4. 创建分享链接
+5. 设置文件权限
+
+命令行参数说明
+--------------
+-i 127.0.0.1        # 监听本地（通过反向代理访问）
+-p ${listen_port}            # 监听端口
+-a ${admin_user}:xxx        # 管理员账号
+-v ${share_dir}::A,${admin_user}  # 挂载点和权限（A=完全控制）
+-e2d                # 启用 2D 编码
+-e2ts               # 启用时间戳
+--hist ${cache_dir}  # 历史记录目录
+-j 16               # 并发 Web 线程
+-nc 64              # 网络连接数
+--no-acode          # 禁用音频编码
+--rproxy -1         # 反向代理模式
+--no-voldump        # 禁用卷转储
+--no-thumb          # 禁用缩略图（性能优化）
+--no-hash .*        # 禁用文件哈希（性能优化）
+--no-clone          # 禁用克隆
+--no-scandir        # 禁用 scandir（FUSE 优化）
+--db-act 0          # 最小化数据库活动
+
+性能调优建议
+------------
+1. 增加并发:
+   修改 -j 和 -nc 参数
+
+2. 启用缩略图（小文件）:
+   移除 --no-thumb 参数
+
+3. 启用文件哈希（去重）:
+   移除 --no-hash 参数
+
+4. 监控资源:
+   top -u www-data
+   htop -u www-data
+
+5. 调整上传大小限制:
+   编辑 Nginx 配置中的 client_max_body_size
+
+故障排查
+--------
+如果无法访问:
+  1. 检查服务: supervisorctl status copyparty
+  2. 检查日志: tail -f /var/log/supervisor/copyparty.log
+  3. 检查 Web 服务: systemctl status ${SERVICE_NAME}
+  4. 检查端口: netstat -tlnp | grep ${listen_port}
+
+如果上传失败:
+  1. 检查磁盘空间: df -h
+  2. 检查目录权限: ls -ld ${share_dir}
+  3. 增大上传限制: client_max_body_size
+  4. 检查超时设置
+
+如果性能差:
+  1. 检查缓存目录: du -sh ${cache_dir}
+  2. 检查共享目录类型（本地/网络）
+  3. 调整并发参数
+  4. 查看资源使用: top -u www-data
+
+如果预览失败:
+  1. 检查 FFmpeg: ffmpeg -version
+  2. 检查 Python 库: pip3 list | grep -E 'mutagen|pillow'
+  3. 查看错误日志
+
+更新 Copyparty
+--------------
+cd /tmp
+wget https://github.com/9001/copyparty/releases/latest/download/copyparty-sfx.py -O copyparty.py
+supervisorctl stop copyparty
+mv copyparty.py ${install_dir}/
+chmod +x ${install_dir}/copyparty.py
+chown www-data:www-data ${install_dir}/copyparty.py
+supervisorctl start copyparty
+
+卸载服务
+--------
+1. 停止服务:
+   supervisorctl stop copyparty
+
+2. 删除配置:
+   rm /etc/supervisor/conf.d/copyparty.conf
+   supervisorctl reread
+   supervisorctl update
+
+3. 删除 Web 配置:
+   rm ${SITES_ENABLED}/${domain}.conf
+   rm ${SITES_AVAIL}/${domain}.conf
+   systemctl reload ${SERVICE_NAME}
+
+4. 删除文件（可选）:
+   rm -rf ${install_dir}
+   rm -rf ${cache_dir}
+
+5. 保留数据（可选）:
+   ${data_dir}
+   ${share_dir}
+
+安全提示
+--------
+⚠️  修改默认管理员密码
+⚠️  定期备份数据
+⚠️  限制访问 IP（可选）
+⚠️  使用强密码
+⚠️  定期更新 Copyparty
+⚠️  监控磁盘使用
+
+参考资源
+--------
+官方文档: https://github.com/9001/copyparty
+Wiki: https://github.com/9001/copyparty/blob/hovudstraum/docs/README.md
+
+========================================
+INFO
+    
+    chmod 600 "${install_dir}/COPYPARTY-INFO.txt"
+    
+    echo ""
+    print_success "Copyparty 安装完成！"
+    echo ""
+    echo "=========================================="
+    cat "${install_dir}/COPYPARTY-INFO.txt"
+    echo "=========================================="
+    echo ""
+    print_warning "⚠️  请妥善保管管理员密码！"
+    print_info "信息已保存到: ${install_dir}/COPYPARTY-INFO.txt"
+    
+    press_enter
+}
+
+
+
+
 
 # ============================================
 # 列出所有站点
@@ -2942,33 +3484,68 @@ show_webapp_menu() {
     echo ""
     
     # 显示环境状态
-    echo -e "${CYAN}环境状态:${NC}"
-    
-    if [ "$WEB_SERVER" != "none" ]; then
-        show_webserver_info
-    else
-        echo -e "${YELLOW}○${NC} Web 服务器: 未安装"
-        echo "  请先使用主菜单安装 Nginx/OpenResty"
-    fi
-    
+    echo "【系统环境】"
     echo ""
     
+    # Web 服务器状态
+    if [ "$WEB_SERVER" != "none" ]; then
+        local version=""
+        if [ "$WEB_SERVER" = "openresty" ]; then
+            version=$(openresty -v 2>&1 | grep -oP 'openresty/\K[0-9.]+' || echo "unknown")
+            echo -e "${GREEN}✓${NC} Web 服务器: OpenResty ${version}"
+        else
+            version=$(nginx -v 2>&1 | grep -oP 'nginx/\K[0-9.]+' || echo "unknown")
+            echo -e "${GREEN}✓${NC} Web 服务器: Nginx ${version}"
+        fi
+    else
+        echo -e "${YELLOW}○${NC} Web 服务器: 未安装"
+    fi
+    
+    # PHP 状态
     if check_php; then
-        print_success "PHP: 已安装 ($(php -r 'echo PHP_VERSION;' 2>/dev/null))"
+        local php_ver=$(php -v | head -1 | awk '{print $2}' | cut -d- -f1)
+        echo -e "${GREEN}✓${NC} PHP: ${php_ver}"
     else
         echo -e "${YELLOW}○${NC} PHP: 未安装"
     fi
     
+    # MySQL/MariaDB 状态
     if check_mysql; then
-        print_success "MySQL/MariaDB: 已安装"
+        local mysql_ver=$(mysql --version | awk '{print $5}' | cut -d, -f1)
+        echo -e "${GREEN}✓${NC} MySQL/MariaDB: ${mysql_ver}"
     else
         echo -e "${YELLOW}○${NC} MySQL/MariaDB: 未安装"
     fi
     
+    # PostgreSQL 状态
     if check_postgresql; then
-        print_success "PostgreSQL: 已安装"
+        local pg_ver=$(sudo -u postgres psql --version | awk '{print $3}')
+        echo -e "${GREEN}✓${NC} PostgreSQL: ${pg_ver}"
     else
         echo -e "${YELLOW}○${NC} PostgreSQL: 未安装"
+    fi
+    
+    # Python3 状态
+    if command -v python3 &> /dev/null; then
+        local py_ver=$(python3 --version | awk '{print $2}')
+        echo -e "${GREEN}✓${NC} Python3: ${py_ver}"
+    else
+        echo -e "${YELLOW}○${NC} Python3: 未安装"
+    fi
+    
+    # Supervisor 状态
+    if command -v supervisorctl &> /dev/null; then
+        echo -e "${GREEN}✓${NC} Supervisor: 已安装"
+    else
+        echo -e "${YELLOW}○${NC} Supervisor: 未安装"
+    fi
+    
+    # Rclone 状态
+    if command -v rclone &> /dev/null; then
+        local rclone_ver=$(rclone version | head -1 | awk '{print $2}')
+        echo -e "${GREEN}✓${NC} Rclone: ${rclone_ver}"
+    else
+        echo -e "${YELLOW}○${NC} Rclone: 未安装"
     fi
     
     echo ""
@@ -2989,20 +3566,24 @@ show_webapp_menu() {
     echo "5. ☁️  Rclone 挂载 (云存储挂载)"
     echo "   需要: fuse3 + rclone + Supervisor"
     echo ""
+    echo "6. 📁 Copyparty (文件服务器)"
+    echo "   需要: Nginx/OpenResty + Python3 + Supervisor"
+    echo ""
     echo "【站点管理】"
     echo ""
-    echo "6. 📋 列出所有站点"
-    echo "7. 📄 查看站点信息"
-    echo "8. ❌ 删除站点"
+    echo "7. 📋 列出所有站点"
+    echo "8. 📄 查看站点信息"
+    echo "9. ❌ 删除站点"
     echo ""
     echo "【系统管理】"
     echo ""
-    echo "9. 🔄 重启服务"
-    echo "10. 🔍 系统诊断"
+    echo "10. 🔄 重启服务"
+    echo "11. 🔍 系统诊断"
     echo ""
     echo "0. 返回主菜单"
     echo "=========================================="
 }
+
 
 
 
