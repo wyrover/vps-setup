@@ -1792,6 +1792,439 @@ INFO
 
 
 # ============================================
+# 配置 Rclone 挂载
+# ============================================
+
+install_rclone() {
+    clear
+    echo "=========================================="
+    echo "   配置 Rclone 挂载"
+    echo "=========================================="
+    echo ""
+    
+    check_root || return
+    
+    # 检查并安装依赖
+    print_info "检查依赖..."
+    
+    # 安装 fuse3
+    if ! command -v fusermount3 >/dev/null 2>&1; then
+        print_info "安装 fuse3..."
+        apt-get update -qq && apt-get install -y fuse3
+    else
+        print_success "fuse3 已安装"
+    fi
+    
+    # 安装 rclone
+    if ! command -v rclone >/dev/null 2>&1; then
+        print_info "安装 rclone..."
+        cd /tmp
+        rm -rf rclone-*
+        wget -q --show-progress https://downloads.rclone.org/rclone-current-linux-amd64.zip
+        unzip -q rclone-current-linux-amd64.zip
+        cd rclone-*-linux-amd64
+        cp rclone /usr/bin/
+        chown root:root /usr/bin/rclone
+        chmod 755 /usr/bin/rclone
+        cd /tmp
+        rm -rf rclone-*
+        print_success "rclone 已安装"
+    else
+        local rclone_version=$(rclone version | head -1 | awk '{print $2}')
+        print_success "rclone 已安装 (${rclone_version})"
+    fi
+    
+    # 检查 Supervisor
+    if ! command -v supervisorctl >/dev/null 2>&1; then
+        print_warning "Supervisor 未安装"
+        echo ""
+        read -p "是否安装 Supervisor？[Y/n]: " install_supervisor
+        if [[ ! "$install_supervisor" =~ ^[Nn]$ ]]; then
+            print_info "安装 Supervisor..."
+            apt-get update -qq && apt-get install -y supervisor
+            systemctl enable supervisor
+            systemctl start supervisor
+            print_success "Supervisor 已安装"
+        else
+            print_warning "跳过 Supervisor 安装，将无法自动启动挂载"
+        fi
+    else
+        print_success "Supervisor 已安装"
+    fi
+    
+    # 配置 fuse
+    if ! grep -q "^user_allow_other" /etc/fuse.conf 2>/dev/null; then
+        print_info "配置 FUSE..."
+        echo "user_allow_other" >> /etc/fuse.conf
+        print_success "FUSE 配置完成"
+    else
+        print_success "FUSE 已配置"
+    fi
+    
+    # 配置参数
+    echo ""
+    print_info "Rclone 挂载配置"
+    echo ""
+    
+    # 检查是否已有 rclone 配置
+    if [ -f "/root/.config/rclone/rclone.conf" ]; then
+        print_info "检测到现有 rclone 配置"
+        echo ""
+        rclone listremotes
+        echo ""
+    else
+        print_warning "未检测到 rclone 配置"
+        echo ""
+        print_info "请先运行以下命令配置远程存储："
+        echo "  rclone config"
+        echo ""
+        read -p "是否现在配置？[Y/n]: " config_now
+        if [[ ! "$config_now" =~ ^[Nn]$ ]]; then
+            rclone config
+        else
+            print_info "已取消，请稍后运行 'rclone config' 配置"
+            press_enter
+            return
+        fi
+    fi
+    
+    # 输入配置参数
+    echo ""
+    read -p "远程名称 (如: onedrive): " remote_name
+    if [ -z "$remote_name" ]; then
+        print_error "远程名称不能为空"
+        press_enter
+        return
+    fi
+    
+    # 验证远程是否存在
+    if ! rclone listremotes | grep -q "^${remote_name}:$"; then
+        print_error "远程 '${remote_name}' 不存在"
+        echo ""
+        print_info "可用的远程："
+        rclone listremotes
+        press_enter
+        return
+    fi
+    
+    read -p "远程路径 (默认: /，根目录): " remote_path
+    remote_path=${remote_path:-/}
+    
+    read -p "本地挂载点 (默认: /mnt/${remote_name}): " mount_point
+    mount_point=${mount_point:-/mnt/${remote_name}}
+    
+    read -p "缓存目录 (默认: /data/rclone-cache/${remote_name}): " cache_dir
+    cache_dir=${cache_dir:-/data/rclone-cache/${remote_name}}
+    
+    read -p "缓存大小 (默认: 2G): " cache_size
+    cache_size=${cache_size:-2G}
+    
+    read -p "读取块大小 (默认: 16M): " chunk_size
+    chunk_size=${chunk_size:-16M}
+    
+    # 创建目录
+    print_info "创建目录..."
+    mkdir -p "$mount_point"
+    mkdir -p "$cache_dir"
+    
+    # 获取 www-data UID/GID
+    local WWW_UID=$(id -u www-data 2>/dev/null || echo "33")
+    local WWW_GID=$(id -g www-data 2>/dev/null || echo "33")
+    
+    # 设置缓存目录权限
+    chown -R www-data:www-data "$cache_dir"
+    chmod -R 755 "$cache_dir"
+    
+    print_success "目录创建完成"
+    
+    # 构建 rclone 命令
+    local RCLONE_CMD="/usr/bin/rclone mount ${remote_name}:${remote_path} ${mount_point} \
+--cache-dir ${cache_dir} \
+--vfs-cache-mode full \
+--vfs-cache-max-size ${cache_size} \
+--vfs-read-chunk-size ${chunk_size} \
+--allow-other \
+--dir-cache-time 1h \
+--poll-interval 1m \
+--attr-timeout 1h \
+--uid=${WWW_UID} \
+--gid=${WWW_GID} \
+--umask 002"
+    
+    echo ""
+    print_info "挂载配置："
+    echo "  远程: ${remote_name}:${remote_path}"
+    echo "  挂载点: ${mount_point}"
+    echo "  缓存目录: ${cache_dir}"
+    echo "  缓存大小: ${cache_size}"
+    echo "  读取块: ${chunk_size}"
+    echo "  UID/GID: ${WWW_UID}/${WWW_GID} (www-data)"
+    echo "  缓存模式: full (完整缓存)"
+    echo ""
+    
+    read -p "确认配置？[Y/n]: " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "已取消"
+        press_enter
+        return
+    fi
+    
+    # 测试挂载
+    echo ""
+    print_info "测试挂载连接..."
+    if timeout 30 rclone lsd "${remote_name}:${remote_path}" >/dev/null 2>&1; then
+        print_success "远程连接正常"
+    else
+        print_error "无法连接到远程存储"
+        echo ""
+        print_info "请检查："
+        echo "  1. rclone 配置是否正确: rclone config"
+        echo "  2. 网络连接是否正常"
+        echo "  3. 远程路径是否存在: rclone lsd ${remote_name}:"
+        echo ""
+        read -p "是否继续？[y/N]: " continue_anyway
+        if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+            press_enter
+            return
+        fi
+    fi
+    
+    # 创建 Supervisor 配置
+    if command -v supervisorctl >/dev/null 2>&1; then
+        print_info "配置 Supervisor..."
+        
+        local service_name="rclone-${remote_name}"
+        local supervisor_conf="/etc/supervisor/conf.d/${service_name}.conf"
+        
+        cat > "$supervisor_conf" << SUPERVISORCONF
+[program:${service_name}]
+command=${RCLONE_CMD}
+autostart=true
+autorestart=true
+user=root
+redirect_stderr=true
+stdout_logfile=/var/log/supervisor/${service_name}.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=3
+SUPERVISORCONF
+        
+        print_success "Supervisor 配置完成"
+        
+        # 重载并启动
+        print_info "启动 rclone 挂载..."
+        supervisorctl reread
+        supervisorctl update
+        sleep 3
+        
+        # 检查状态
+        if supervisorctl status "$service_name" | grep -q "RUNNING"; then
+            print_success "rclone 挂载已启动"
+            
+            # 验证挂载点
+            if mountpoint -q "$mount_point"; then
+                print_success "挂载点验证成功: $mount_point"
+                echo ""
+                print_info "挂载内容："
+                ls -lh "$mount_point" | head -10
+            else
+                print_warning "挂载点验证失败，请检查日志"
+            fi
+        else
+            print_error "rclone 挂载启动失败"
+            echo ""
+            print_info "查看日志："
+            echo "  tail -f /var/log/supervisor/${service_name}.log"
+        fi
+    else
+        print_warning "Supervisor 未安装，无法自动启动"
+        echo ""
+        print_info "手动挂载命令："
+        echo "  ${RCLONE_CMD} --verbose"
+    fi
+    
+    # 保存信息
+    local info_file="/root/rclone-${remote_name}-info.txt"
+    cat > "$info_file" << INFO
+========================================
+Rclone 挂载信息
+========================================
+
+配置时间: $(date)
+
+挂载配置
+--------
+远程名称: ${remote_name}
+远程路径: ${remote_path}
+本地挂载点: ${mount_point}
+缓存目录: ${cache_dir}
+缓存大小: ${cache_size}
+读取块大小: ${chunk_size}
+缓存模式: full (完整缓存)
+
+权限配置
+--------
+UID: ${WWW_UID} (www-data)
+GID: ${WWW_GID} (www-data)
+umask: 002
+
+Supervisor 服务
+---------------
+服务名: rclone-${remote_name}
+配置文件: /etc/supervisor/conf.d/rclone-${remote_name}.conf
+日志文件: /var/log/supervisor/rclone-${remote_name}.log
+
+管理命令
+--------
+查看状态:
+  supervisorctl status rclone-${remote_name}
+
+启动服务:
+  supervisorctl start rclone-${remote_name}
+
+停止服务:
+  supervisorctl stop rclone-${remote_name}
+
+重启服务:
+  supervisorctl restart rclone-${remote_name}
+
+查看日志（实时）:
+  tail -f /var/log/supervisor/rclone-${remote_name}.log
+
+查看日志（最近）:
+  tail -100 /var/log/supervisor/rclone-${remote_name}.log
+
+手动挂载命令（调试用）:
+  ${RCLONE_CMD} --verbose
+
+手动卸载:
+  fusermount -u ${mount_point}
+
+检查挂载
+--------
+验证挂载点:
+  mountpoint ${mount_point}
+
+查看挂载内容:
+  ls -lh ${mount_point}
+
+测试读取:
+  rclone lsd ${remote_name}:${remote_path}
+
+缓存管理
+--------
+查看缓存大小:
+  du -sh ${cache_dir}
+
+清理缓存:
+  rm -rf ${cache_dir}/*
+  supervisorctl restart rclone-${remote_name}
+
+Rclone 配置
+-----------
+配置文件: /root/.config/rclone/rclone.conf
+
+查看所有远程:
+  rclone listremotes
+
+编辑配置:
+  rclone config
+
+测试连接:
+  rclone lsd ${remote_name}:
+
+性能优化建议
+------------
+1. 根据网络速度调整块大小:
+   慢速网络: --vfs-read-chunk-size 8M
+   快速网络: --vfs-read-chunk-size 32M
+
+2. 根据使用场景调整缓存:
+   只读: --vfs-cache-mode minimal
+   读写: --vfs-cache-mode full
+
+3. 调整缓存大小:
+   编辑 /etc/supervisor/conf.d/rclone-${remote_name}.conf
+   修改 --vfs-cache-max-size 参数
+   supervisorctl reread && supervisorctl restart rclone-${remote_name}
+
+4. 监控资源使用:
+   top -p \$(pgrep rclone)
+   watch -n 1 du -sh ${cache_dir}
+
+故障排查
+--------
+如果挂载失败:
+  1. 检查日志: tail -f /var/log/supervisor/rclone-${remote_name}.log
+  2. 验证配置: rclone config show
+  3. 测试连接: rclone lsd ${remote_name}:
+  4. 手动挂载: ${RCLONE_CMD} --verbose
+  5. 检查 fuse: cat /etc/fuse.conf | grep user_allow_other
+
+如果性能慢:
+  1. 检查网络: ping -c 5 8.8.8.8
+  2. 检查缓存: du -sh ${cache_dir}
+  3. 增大缓存: --vfs-cache-max-size 4G
+  4. 增大块大小: --vfs-read-chunk-size 32M
+
+如果无法写入:
+  1. 检查缓存模式: 确保使用 --vfs-cache-mode full
+  2. 检查权限: ls -ld ${mount_point}
+  3. 检查 uid/gid: 确保与 www-data 匹配
+
+卸载服务
+--------
+1. 停止服务:
+   supervisorctl stop rclone-${remote_name}
+
+2. 卸载挂载点:
+   fusermount -u ${mount_point}
+
+3. 删除配置:
+   rm /etc/supervisor/conf.d/rclone-${remote_name}.conf
+   supervisorctl reread
+
+4. 清理缓存（可选）:
+   rm -rf ${cache_dir}
+
+5. 删除挂载点（可选）:
+   rmdir ${mount_point}
+
+安全提示
+--------
+⚠️  rclone.conf 包含敏感信息，请妥善保管
+⚠️  定期检查缓存大小，避免磁盘占满
+⚠️  使用 HTTPS 传输确保数据安全
+⚠️  定期更新 rclone 到最新版本
+
+更新 rclone
+-----------
+cd /tmp
+wget https://downloads.rclone.org/rclone-current-linux-amd64.zip
+unzip -q rclone-current-linux-amd64.zip
+cd rclone-*-linux-amd64
+cp rclone /usr/bin/
+supervisorctl restart rclone-${remote_name}
+
+========================================
+INFO
+    
+    chmod 600 "$info_file"
+    
+    echo ""
+    print_success "Rclone 挂载配置完成！"
+    echo ""
+    echo "=========================================="
+    cat "$info_file"
+    echo "=========================================="
+    echo ""
+    print_info "信息已保存到: $info_file"
+    
+    press_enter
+}
+
+
+
+# ============================================
 # 列出所有站点
 # ============================================
 
@@ -2268,26 +2701,30 @@ show_webapp_menu() {
     echo "4. 📚 DokuWiki (无数据库 Wiki)"
     echo "   需要: Nginx/OpenResty + PHP"
     echo ""
+    echo "5. ☁️  Rclone 挂载 (云存储挂载)"
+    echo "   需要: fuse3 + rclone + Supervisor"
+    echo ""
     echo "【站点管理】"
     echo ""
-    echo "5. 📋 列出所有站点"
-    echo "6. 📄 查看站点信息"
-    echo "7. ❌ 删除站点"
+    echo "6. 📋 列出所有站点"
+    echo "7. 📄 查看站点信息"
+    echo "8. ❌ 删除站点"
     echo ""
     echo "【系统管理】"
     echo ""
-    echo "8. 🔄 重启服务"
-    echo "9. 🔍 系统诊断"
+    echo "9. 🔄 重启服务"
+    echo "10. 🔍 系统诊断"
     echo ""
     echo "0. 返回主菜单"
     echo "=========================================="
 }
 
 
+
 webapp_menu() {
     while true; do
         show_webapp_menu
-        read -p "请选择 [0-9]: " choice
+        read -p "请选择 [0-10]: " choice
         
         case $choice in
             1)
@@ -2303,15 +2740,18 @@ webapp_menu() {
                 install_dokuwiki
                 ;;
             5)
-                list_sites
+                install_rclone
                 ;;
             6)
-                view_site_info
+                list_sites
                 ;;
             7)
-                delete_site
+                view_site_info
                 ;;
             8)
+                delete_site
+                ;;
+            9)
                 init_webserver_config
                 if [ "$WEB_SERVER" != "none" ]; then
                     print_info "正在重启服务..."
@@ -2319,14 +2759,15 @@ webapp_menu() {
                     systemctl restart php${PHP_VERSION}-fpm 2>/dev/null || true
                     systemctl restart mariadb 2>/dev/null || systemctl restart mysql 2>/dev/null || true
                     systemctl restart postgresql 2>/dev/null || true
-                    systemctl restart ttrss-update 2>/dev/null || true
+                    systemctl restart tt-rss-update 2>/dev/null || true
+                    supervisorctl restart all 2>/dev/null || true
                     print_success "服务已重启"
                 else
                     print_error "未检测到 Web 服务器"
                 fi
                 press_enter
                 ;;
-            9)
+            10)
                 diagnose
                 ;;
             0)
@@ -2341,6 +2782,7 @@ webapp_menu() {
         esac
     done
 }
+
 
 
 # 启动菜单
