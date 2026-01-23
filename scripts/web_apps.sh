@@ -1795,10 +1795,6 @@ INFO
 # 配置 Rclone 挂载
 # ============================================
 
-# ============================================
-# 配置 Rclone 挂载
-# ============================================
-
 install_rclone() {
     clear
     echo "=========================================="
@@ -1810,31 +1806,42 @@ install_rclone() {
     
     # 检查是否在 LXC 容器中
     local in_lxc=false
+    local container_name=""
+    
     if [ -f "/proc/1/environ" ] && grep -qa "container=lxc" /proc/1/environ 2>/dev/null; then
         in_lxc=true
     elif grep -q "lxc" /proc/1/cgroup 2>/dev/null; then
         in_lxc=true
     fi
     
+    # 尝试获取容器名称
     if [ "$in_lxc" = true ]; then
-        print_warning "检测到 LXC 容器环境"
+        container_name=$(hostname)
+    fi
+    
+    if [ "$in_lxc" = true ]; then
+        print_warning "检测到 LXC 容器环境: ${container_name}"
         echo ""
-        print_info "LXC 容器使用 FUSE 需要在宿主机上执行以下操作："
+        print_info "原生 LXC 容器使用 FUSE 需要在宿主机上配置："
         echo ""
-        echo "1. 获取容器 ID："
-        echo "   ${CYAN}pct list${NC}"
+        echo "1. 编辑容器配置文件（在宿主机执行）："
+        echo "   ${GREEN}vim /var/lib/lxc/${container_name}/config${NC}"
         echo ""
-        echo "2. 为容器启用 FUSE 特性（在宿主机执行）："
-        echo "   ${GREEN}pct set <VMID> -features fuse=1${NC}"
+        echo "2. 添加以下配置行："
+        echo "   ${CYAN}lxc.apparmor.profile = unconfined${NC}"
+        echo "   ${CYAN}lxc.cgroup2.devices.allow = c 10:229 rwm${NC}"
+        echo "   ${CYAN}lxc.mount.entry = /dev/fuse dev/fuse none bind,create=file 0 0${NC}"
+        echo ""
+        echo "   或者更简单的方式（允许所有设备）："
+        echo "   ${CYAN}lxc.apparmor.profile = unconfined${NC}"
+        echo "   ${CYAN}lxc.cgroup2.devices.allow = a${NC}"
         echo ""
         echo "3. 重启容器（在宿主机执行）："
-        echo "   ${GREEN}pct reboot <VMID>${NC}"
-        echo "   或者"
-        echo "   ${GREEN}pct stop <VMID> && pct start <VMID>${NC}"
+        echo "   ${GREEN}lxc-stop -n ${container_name}${NC}"
+        echo "   ${GREEN}lxc-start -n ${container_name}${NC}"
         echo ""
-        echo "4. 验证配置（在宿主机执行）："
-        echo "   ${CYAN}pct config <VMID> | grep features${NC}"
-        echo "   应该显示: features: fuse=1"
+        echo "4. 验证（在容器内执行）："
+        echo "   ${CYAN}ls -l /dev/fuse${NC}"
         echo ""
         print_warning "注意：必须重启容器才能生效！"
         echo ""
@@ -1845,20 +1852,36 @@ install_rclone() {
             echo ""
             print_info "这表明宿主机尚未为此容器启用 FUSE"
             echo ""
-            read -p "是否已在宿主机上执行上述操作？[y/N]: " fuse_configured
+            print_info "完整配置示例（在宿主机 /var/lib/lxc/${container_name}/config 中）："
+            cat << 'LXCCONFIG'
+# FUSE 支持
+lxc.apparmor.profile = unconfined
+lxc.cgroup2.devices.allow = c 10:229 rwm
+lxc.mount.entry = /dev/fuse dev/fuse none bind,create=file 0 0
+
+# 或者允许所有设备（更简单但安全性稍低）
+# lxc.apparmor.profile = unconfined
+# lxc.cgroup2.devices.allow = a
+LXCCONFIG
+            echo ""
+            read -p "是否已在宿主机上配置 FUSE？[y/N]: " fuse_configured
             if [[ ! "$fuse_configured" =~ ^[Yy]$ ]]; then
                 print_info "请先在宿主机上配置 FUSE，然后重新运行此脚本"
                 echo ""
                 print_info "快速操作（在宿主机执行）："
-                echo "  1. 查看容器列表: pct list"
-                echo "  2. 启用 FUSE: pct set <VMID> -features fuse=1"
-                echo "  3. 重启容器: pct reboot <VMID>"
+                echo "  1. 编辑配置: vim /var/lib/lxc/${container_name}/config"
+                echo "  2. 添加上述 FUSE 配置"
+                echo "  3. 重启容器: lxc-stop -n ${container_name} && lxc-start -n ${container_name}"
+                echo "  4. 进入容器: lxc-attach -n ${container_name}"
+                echo "  5. 验证设备: ls -l /dev/fuse"
                 press_enter
                 return
             fi
         else
             print_success "/dev/fuse 设备存在"
             ls -l /dev/fuse
+            echo ""
+            print_success "LXC FUSE 配置正确"
         fi
     fi
     
@@ -1876,40 +1899,23 @@ install_rclone() {
     
     # 检查并加载 FUSE 内核模块
     print_info "检查 FUSE 内核模块..."
-    if ! lsmod | grep -q "^fuse"; then
+    if ! lsmod | grep -q "^fuse" && ! grep -q "fuse" /proc/filesystems 2>/dev/null; then
         print_warning "FUSE 内核模块未加载"
-        print_info "加载 FUSE 模块..."
         
-        if modprobe fuse 2>/dev/null; then
-            print_success "FUSE 模块加载成功"
-        else
-            # 在 LXC 中，模块可能由宿主机加载
-            if [ "$in_lxc" = true ]; then
-                print_info "LXC 容器中 FUSE 模块由宿主机管理"
-                
-                # 检查 /dev/fuse 是否可用
-                if [ -c "/dev/fuse" ]; then
-                    print_success "FUSE 设备可用"
-                else
-                    print_error "FUSE 设备不可用"
-                    echo ""
-                    print_info "请在宿主机上执行："
-                    echo "  pct set <VMID> -features fuse=1"
-                    echo "  pct reboot <VMID>"
-                    echo ""
-                    read -p "是否继续尝试？[y/N]: " continue_anyway
-                    if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
-                        press_enter
-                        return
-                    fi
-                fi
+        if [ "$in_lxc" = true ]; then
+            print_info "LXC 容器中 FUSE 模块由宿主机管理"
+            
+            # 检查 /dev/fuse 是否可用
+            if [ -c "/dev/fuse" ]; then
+                print_success "FUSE 设备可用"
             else
-                print_error "无法加载 FUSE 模块"
+                print_error "FUSE 设备不可用"
                 echo ""
-                print_info "检查命令："
-                echo "  lsmod | grep fuse"
-                echo "  ls -l /dev/fuse"
-                echo "  grep fuse /proc/filesystems"
+                print_info "请在宿主机上确保 FUSE 模块已加载："
+                echo "  sudo modprobe fuse"
+                echo "  echo 'fuse' >> /etc/modules"
+                echo ""
+                print_info "然后配置容器（见上面的配置说明）"
                 echo ""
                 read -p "是否继续尝试？[y/N]: " continue_anyway
                 if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
@@ -1917,9 +1923,18 @@ install_rclone() {
                     return
                 fi
             fi
+        else
+            print_info "加载 FUSE 模块..."
+            if modprobe fuse 2>/dev/null; then
+                print_success "FUSE 模块加载成功"
+            else
+                print_error "无法加载 FUSE 模块"
+                press_enter
+                return
+            fi
         fi
     else
-        print_success "FUSE 模块已加载"
+        print_success "FUSE 可用"
     fi
     
     # 验证 FUSE 设备
@@ -1930,11 +1945,18 @@ install_rclone() {
             echo ""
             print_error "LXC 容器未正确配置 FUSE"
             echo ""
-            print_info "解决步骤（在宿主机执行）："
-            echo "  1. pct set <VMID> -features fuse=1"
-            echo "  2. pct reboot <VMID>"
+            print_info "在宿主机编辑: /var/lib/lxc/${container_name}/config"
             echo ""
-            print_warning "必须重启容器！stop/start 或 reboot"
+            echo "添加以下行："
+            echo "  lxc.apparmor.profile = unconfined"
+            echo "  lxc.cgroup2.devices.allow = c 10:229 rwm"
+            echo "  lxc.mount.entry = /dev/fuse dev/fuse none bind,create=file 0 0"
+            echo ""
+            echo "然后重启容器:"
+            echo "  lxc-stop -n ${container_name}"
+            echo "  lxc-start -n ${container_name}"
+            echo ""
+            print_warning "必须重启容器！"
             press_enter
             return
         else
@@ -1953,10 +1975,11 @@ install_rclone() {
         
         # 检查设备权限
         local fuse_perms=$(ls -l /dev/fuse | awk '{print $1}')
+        echo "  权限: $fuse_perms"
         if [[ "$fuse_perms" =~ rw.*rw ]]; then
             print_success "FUSE 设备权限正常"
         else
-            print_warning "FUSE 设备权限可能不足"
+            print_warning "FUSE 设备权限可能不足，尝试修复..."
             chmod 666 /dev/fuse 2>/dev/null || true
         fi
     fi
@@ -2117,7 +2140,7 @@ install_rclone() {
     
     echo ""
     print_info "挂载配置："
-    echo "  环境: $([ "$in_lxc" = true ] && echo 'LXC 容器' || echo '物理机/虚拟机')"
+    echo "  环境: $([ "$in_lxc" = true ] && echo "LXC 容器 (${container_name})" || echo '物理机/虚拟机')"
     echo "  远程: ${remote_name}:${remote_path}"
     echo "  挂载点: ${mount_point}"
     echo "  缓存目录: ${cache_dir}"
@@ -2233,21 +2256,35 @@ Rclone 挂载信息
 ========================================
 
 配置时间: $(date)
-运行环境: $([ "$in_lxc" = true ] && echo 'LXC 容器' || echo '物理机/虚拟机')
+运行环境: $([ "$in_lxc" = true ] && echo "LXC 容器 (${container_name})" || echo '物理机/虚拟机')
 
 $([ "$in_lxc" = true ] && cat << LXC_INFO
 
-LXC 容器配置
-------------
-FUSE 特性已启用（在宿主机配置）
-重要：修改 FUSE 配置后必须重启容器
+LXC 容器配置（Debian 原生 LXC）
+--------------------------------
+配置文件位置（在宿主机）: /var/lib/lxc/${container_name}/config
 
-检查 FUSE 配置（在宿主机执行）:
-  pct config <VMID> | grep features
+必需的配置行:
+  lxc.apparmor.profile = unconfined
+  lxc.cgroup2.devices.allow = c 10:229 rwm
+  lxc.mount.entry = /dev/fuse dev/fuse none bind,create=file 0 0
 
-如需禁用 FUSE:
-  pct set <VMID> -features fuse=0
-  pct reboot <VMID>
+或者更简单（允许所有设备）:
+  lxc.apparmor.profile = unconfined
+  lxc.cgroup2.devices.allow = a
+
+修改配置后必须重启容器（在宿主机）:
+  lxc-stop -n ${container_name}
+  lxc-start -n ${container_name}
+
+验证配置（在容器内）:
+  ls -l /dev/fuse
+
+宿主机管理命令:
+  列出容器: lxc-ls -f
+  进入容器: lxc-attach -n ${container_name}
+  查看配置: cat /var/lib/lxc/${container_name}/config
+  容器日志: journalctl -u lxc@${container_name}
 
 LXC_INFO
 )
@@ -2316,6 +2353,7 @@ Supervisor 服务
 检查 FUSE 设备:
   ls -l /dev/fuse
   lsmod | grep fuse
+  grep fuse /proc/filesystems
 
 缓存管理
 --------
@@ -2362,15 +2400,25 @@ Rclone 配置
 --------
 $([ "$in_lxc" = true ] && cat << LXC_TROUBLESHOOT
 
-LXC 容器特定问题:
+LXC 容器特定问题（Debian 原生 LXC）:
+  
   1. FUSE 设备不存在:
-     在宿主机执行: pct set <VMID> -features fuse=1
-     重启容器: pct reboot <VMID>
+     在宿主机编辑: /var/lib/lxc/${container_name}/config
+     添加上述配置行
+     重启容器: lxc-stop -n ${container_name} && lxc-start -n ${container_name}
   
   2. 挂载失败 "fuse device not found":
-     检查 /dev/fuse 是否存在
+     检查 /dev/fuse 是否存在: ls -l /dev/fuse
      确认容器已重启生效
-     在宿主机检查: pct config <VMID> | grep features
+     在宿主机检查配置: cat /var/lib/lxc/${container_name}/config | grep -E "fuse|devices"
+  
+  3. 权限被拒绝:
+     确认已添加: lxc.apparmor.profile = unconfined
+     确认已添加: lxc.cgroup2.devices.allow = c 10:229 rwm
+  
+  4. 宿主机 FUSE 模块:
+     在宿主机加载: modprobe fuse
+     开机自动加载: echo 'fuse' >> /etc/modules
 
 LXC_TROUBLESHOOT
 )
@@ -2445,19 +2493,19 @@ INFO
     # 显示 FUSE 状态
     echo ""
     print_info "FUSE 状态检查："
-    echo "  运行环境: $([ "$in_lxc" = true ] && echo 'LXC 容器' || echo '物理机/虚拟机')"
+    echo "  运行环境: $([ "$in_lxc" = true ] && echo "LXC 容器 (${container_name})" || echo '物理机/虚拟机')"
     echo "  设备文件: $(ls -l /dev/fuse 2>/dev/null | awk '{print $1, $5, $6}' || echo '不存在')"
     echo "  fusermount: $(which fusermount3 2>/dev/null || echo '未安装')"
     
     if [ "$in_lxc" = true ]; then
         echo ""
         print_warning "LXC 提示：如遇问题，请在宿主机确认："
-        echo "  pct config <VMID> | grep features"
-        echo "  应显示: features: fuse=1"
+        echo "  cat /var/lib/lxc/${container_name}/config | grep -E 'fuse|devices|apparmor'"
     fi
     
     press_enter
 }
+
 
 
 
