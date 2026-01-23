@@ -867,29 +867,89 @@ install_ttrss() {
     local db_name="ttrss"
     local db_user="ttrss"
     local db_pass=""
+    local db_port="5432"
+    local overwrite_install=false
     
     # 检查是否已存在
     if [ -d "$install_dir" ]; then
         echo ""
-        print_warning "Tiny Tiny RSS 已存在: $install_dir"
-        echo -n "是否覆盖安装? (yes/no): "
-        read -r overwrite
-        if [[ "$overwrite" != "yes" ]]; then
-            print_info "已取消"
-            press_enter
-            return
+        print_warning "检测到 Tiny Tiny RSS 已存在"
+        echo "  目录: $install_dir"
+        
+        # 检查是否有配置文件
+        if [ -f "$install_dir/config.php" ]; then
+            echo ""
+            print_info "检测到现有配置，可以选择："
+            echo "  1. 覆盖安装（删除所有数据，重新安装）"
+            echo "  2. 重新配置（保留代码，只更新配置）"
+            echo "  3. 取消"
+            echo ""
+            read -p "请选择 [1-3]: " reinstall_choice
+            
+            case $reinstall_choice in
+                1)
+                    print_warning "⚠️  覆盖安装将删除："
+                    echo "  - 所有订阅数据"
+                    echo "  - 用户账号"
+                    echo "  - 配置文件"
+                    echo "  - 数据库"
+                    echo ""
+                    read -p "输入 'DELETE' 确认删除所有数据: " confirm_delete
+                    
+                    if [ "$confirm_delete" != "DELETE" ]; then
+                        print_info "已取消"
+                        press_enter
+                        return
+                    fi
+                    
+                    overwrite_install=true
+                    
+                    # 停止更新守护进程
+                    print_info "停止服务..."
+                    systemctl stop ttrss-update 2>/dev/null || true
+                    systemctl disable ttrss-update 2>/dev/null || true
+                    
+                    # 备份
+                    backup_site "$install_dir"
+                    
+                    # 删除旧配置和代码
+                    remove_site "$domain"
+                    rm -rf "$install_dir"
+                    
+                    # 删除数据库（稍后会重新创建）
+                    print_info "删除旧数据库..."
+                    sudo -u postgres psql -c "DROP DATABASE IF EXISTS ${db_name};" 2>/dev/null || true
+                    sudo -u postgres psql -c "DROP USER IF EXISTS ${db_user};" 2>/dev/null || true
+                    
+                    # 删除服务文件
+                    rm -f /etc/systemd/system/ttrss-update.service
+                    systemctl daemon-reload
+                    ;;
+                2)
+                    print_info "重新配置模式（保留代码）"
+                    overwrite_install=false
+                    
+                    # 停止服务
+                    systemctl stop ttrss-update 2>/dev/null || true
+                    ;;
+                3)
+                    print_info "已取消"
+                    press_enter
+                    return
+                    ;;
+                *)
+                    print_error "无效选择"
+                    press_enter
+                    return
+                    ;;
+            esac
+        else
+            print_warning "目录存在但无配置文件，将清空目录重新安装"
+            rm -rf "$install_dir"
+            overwrite_install=true
         fi
-        
-        # 备份
-        backup_site "$install_dir"
-        
-        # 删除旧配置
-        remove_site "$domain"
-        
-        # 停止更新守护进程
-        systemctl stop ttrss-update 2>/dev/null || true
-        systemctl disable ttrss-update 2>/dev/null || true
-        rm -f /etc/systemd/system/ttrss-update.service
+    else
+        overwrite_install=true
     fi
     
     # 数据库配置
@@ -909,6 +969,9 @@ install_ttrss() {
         print_info "生成的密码: $db_pass"
     fi
     
+    read -p "数据库端口 (默认: ${db_port}): " custom_db_port
+    db_port=${custom_db_port:-$db_port}
+    
     echo ""
     print_info "安装配置："
     echo "  Web 服务器: ${WEB_SERVER}"
@@ -917,6 +980,8 @@ install_ttrss() {
     echo "  数据库: PostgreSQL"
     echo "  数据库名: ${db_name}"
     echo "  数据库用户: ${db_user}"
+    echo "  数据库端口: ${db_port}"
+    echo "  模式: $([ "$overwrite_install" = true ] && echo '全新安装' || echo '重新配置')"
     echo ""
     
     read -p "确认安装？[Y/n]: " confirm
@@ -926,47 +991,137 @@ install_ttrss() {
         return
     fi
     
-    # 创建数据库
-    echo ""
-    print_info "[1/6] 创建数据库..."
-    create_postgresql_db "$db_name" "$db_user" "$db_pass"
+    # 如果是全新安装，下载代码
+    if [ "$overwrite_install" = true ]; then
+        # 创建数据库
+        echo ""
+        print_info "[1/7] 创建数据库..."
+        create_postgresql_db "$db_name" "$db_user" "$db_pass"
+        
+        # 下载 Tiny Tiny RSS
+        print_info "[2/7] 下载 Tiny Tiny RSS..."
+        mkdir -p "$install_dir"
+        cd /tmp
+        rm -rf tt-rss
+        
+        if ! git clone --depth=1 https://git.tt-rss.org/fox/tt-rss.git; then
+            print_error "下载失败，请检查网络连接"
+            press_enter
+            return
+        fi
+        
+        cp -r tt-rss/* "$install_dir/"
+        rm -rf tt-rss
+        
+        step_num=3
+    else
+        echo ""
+        print_info "跳过代码下载（使用现有代码）"
+        step_num=1
+    fi
     
-    # 下载 Tiny Tiny RSS
-    print_info "[2/6] 下载 Tiny Tiny RSS..."
-    mkdir -p "$install_dir"
-    cd /tmp
-    rm -rf tt-rss
-    git clone --depth=1 https://git.tt-rss.org/fox/tt-rss.git
-    cp -r tt-rss/* "$install_dir/"
-    rm -rf tt-rss
-    
-    # 配置 Tiny Tiny RSS
-    print_info "[3/6] 配置 Tiny Tiny RSS..."
+    # 配置 Tiny Tiny RSS (使用 putenv 方式)
+    print_info "[${step_num}/7] 配置 Tiny Tiny RSS..."
     cd "$install_dir"
-    cp config.php-dist config.php
     
-    sed -i "s|define('DB_TYPE', 'pgsql');|define('DB_TYPE', 'pgsql');|" config.php
-    sed -i "s|define('DB_HOST', 'localhost');|define('DB_HOST', 'localhost');|" config.php
-    sed -i "s|define('DB_USER', 'fox');|define('DB_USER', '${db_user}');|" config.php
-    sed -i "s|define('DB_NAME', 'fox');|define('DB_NAME', '${db_name}');|" config.php
-    sed -i "s|define('DB_PASS', '');|define('DB_PASS', '${db_pass}');|" config.php
-    sed -i "s|define('SELF_URL_PATH', 'http://yourserver/tt-rss/');|define('SELF_URL_PATH', 'https://${domain}/');|" config.php
+    # 创建新的配置文件（使用 putenv）
+    cat > config.php << 'TTRSSCONFIG'
+<?php
+// ************************************
+// Tiny Tiny RSS 配置文件 (Environment)
+// ************************************
+
+// PostgreSQL 数据库配置
+putenv('TTRSS_DB_TYPE=pgsql');          // 数据库类型
+putenv('TTRSS_DB_HOST=127.0.0.1');      // 使用 127.0.0.1 避免 socket 问题
+putenv('TTRSS_DB_PORT=DB_PORT_PLACEHOLDER');  // PostgreSQL 端口
+putenv('TTRSS_DB_NAME=DB_NAME_PLACEHOLDER');  // 数据库名
+putenv('TTRSS_DB_USER=DB_USER_PLACEHOLDER');  // 数据库用户
+putenv('TTRSS_DB_PASS=DB_PASS_PLACEHOLDER');  // 数据库密码
+
+// TTRSS 访问 URL
+putenv('TTRSS_SELF_URL_PATH=SELF_URL_PLACEHOLDER'); // 实际访问地址
+
+// PHP CLI 路径
+putenv('TTRSS_PHP_EXECUTABLE=/usr/bin/php');
+
+// 单用户模式（可选，适合个人使用）
+// putenv('TTRSS_SINGLE_USER_MODE=true');
+
+// 简单更新模式（推荐）
+putenv('TTRSS_SIMPLE_UPDATE_MODE=true');
+
+// 禁用注册（可选）
+// putenv('TTRSS_ENABLE_REGISTRATION=false');
+
+// Session cookie 名称
+putenv('TTRSS_SESSION_COOKIE_LIFETIME=86400');
+
+// 锁目录
+putenv('TTRSS_LOCK_DIRECTORY=lock');
+
+// 缓存目录
+putenv('TTRSS_CACHE_DIR=cache');
+
+// 图标目录
+putenv('TTRSS_ICONS_DIR=feed-icons');
+putenv('TTRSS_ICONS_URL=feed-icons');
+
+// 日志级别
+// putenv('TTRSS_LOG_LEVEL=E_ALL');
+?>
+TTRSSCONFIG
     
-    # 初始化数据库
-    sudo -u postgres psql -d "$db_name" < schema/ttrss_schema_pgsql.sql 2>/dev/null || true
+    # 替换占位符
+    sed -i "s|DB_PORT_PLACEHOLDER|${db_port}|g" config.php
+    sed -i "s|DB_NAME_PLACEHOLDER|${db_name}|g" config.php
+    sed -i "s|DB_USER_PLACEHOLDER|${db_user}|g" config.php
+    sed -i "s|DB_PASS_PLACEHOLDER|${db_pass}|g" config.php
+    sed -i "s|SELF_URL_PLACEHOLDER|https://${domain}/|g" config.php
+    
+    ((step_num++))
+    
+    # 初始化数据库（仅全新安装）
+    if [ "$overwrite_install" = true ]; then
+        print_info "[${step_num}/7] 初始化数据库..."
+        
+        # 检查 schema 文件
+        if [ -f "schema/ttrss_schema_pgsql.sql" ]; then
+            sudo -u postgres psql -d "$db_name" < schema/ttrss_schema_pgsql.sql 2>/dev/null
+            if [ $? -eq 0 ]; then
+                print_success "数据库初始化成功"
+            else
+                print_warning "数据库初始化可能失败，请稍后访问 Web 界面检查"
+            fi
+        else
+            print_warning "未找到 schema 文件，数据库将在首次访问时自动初始化"
+        fi
+        
+        ((step_num++))
+    fi
     
     # 设置权限
+    print_info "[${step_num}/7] 设置文件权限..."
     chown -R www-data:www-data "$install_dir"
     chmod -R 755 "$install_dir"
     
+    # 创建必要的目录
+    mkdir -p "$install_dir"/{lock,cache,feed-icons}
+    chown -R www-data:www-data "$install_dir"/{lock,cache,feed-icons}
+    chmod -R 777 "$install_dir"/{lock,cache,feed-icons}
+    
+    ((step_num++))
+    
     # 生成 SSL 证书
-    print_info "[4/6] 生成 SSL 证书..."
+    print_info "[${step_num}/7] 生成 SSL 证书..."
     local ssl_files=$(generate_ssl_cert "$domain")
     local ssl_cert=$(echo "$ssl_files" | cut -d: -f1)
     local ssl_key=$(echo "$ssl_files" | cut -d: -f2)
     
-    # 创建 Nginx 配置
-    print_info "[5/6] 配置 ${WEB_SERVER}..."
+    ((step_num++))
+    
+    # 创建 Web 服务器配置
+    print_info "[${step_num}/7] 配置 ${WEB_SERVER}..."
     cat > "${SITES_AVAIL}/${domain}.conf" << TTRSSCONF
 server {
     listen 80;
@@ -989,6 +1144,9 @@ server {
     ssl_protocols TLSv1.2 TLSv1.3;
     ssl_ciphers HIGH:!aNULL:!MD5;
     
+    # 增加上传限制
+    client_max_body_size 512M;
+    
     access_log /var/log/${WEB_SERVER}/${domain}.access.log;
     error_log /var/log/${WEB_SERVER}/${domain}.error.log;
     
@@ -999,12 +1157,25 @@ server {
     location ~ \.php\$ {
         try_files \$uri =404;
         fastcgi_pass unix:${PHP_SOCK};
+        fastcgi_index index.php;
         include fastcgi_params;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+        fastcgi_read_timeout 300;
     }
     
+    # 保护敏感文件
     location ~ /\. {
         deny all;
+    }
+    
+    location ~ /(config\.php|\.git) {
+        deny all;
+    }
+    
+    # 缓存静态资源
+    location ~* \.(jpg|jpeg|png|gif|ico|css|js|woff|woff2|ttf|svg)$ {
+        expires 1y;
+        add_header Cache-Control "public, immutable";
     }
 }
 TTRSSCONF
@@ -1015,19 +1186,31 @@ TTRSSCONF
     ln -sf "${SITES_AVAIL}/${domain}.conf" "${SITES_ENABLED}/"
     reload_webserver
     
+    ((step_num++))
+    
     # 配置更新守护进程
-    print_info "[6/6] 配置更新守护进程..."
+    print_info "[${step_num}/7] 配置更新守护进程..."
+    
     cat > /etc/systemd/system/ttrss-update.service << TTRSSSERVICE
 [Unit]
 Description=Tiny Tiny RSS Update Daemon
-After=network.target postgresql.service
+After=network.target postgresql.service ${SERVICE_NAME}.service
+Wants=postgresql.service
 
 [Service]
 Type=simple
 User=www-data
+Group=www-data
+WorkingDirectory=${install_dir}
 ExecStart=/usr/bin/php ${install_dir}/update_daemon2.php
 Restart=always
 RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# 安全加固
+PrivateTmp=yes
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
@@ -1037,47 +1220,131 @@ TTRSSSERVICE
     systemctl enable ttrss-update
     systemctl start ttrss-update
     
+    # 等待服务启动
+    sleep 2
+    
+    # 检查服务状态
+    if systemctl is-active --quiet ttrss-update; then
+        print_success "更新服务已启动"
+    else
+        print_warning "更新服务启动失败，请检查日志: journalctl -u ttrss-update"
+    fi
+    
     # 保存信息
     cat > "$install_dir/TTRSS-INFO.txt" << INFO
+========================================
 Tiny Tiny RSS 安装信息
-======================
+========================================
+
+安装类型: $([ "$overwrite_install" = true ] && echo '全新安装' || echo '重新配置')
+安装时间: $(date)
+
+Web 配置
+--------
 Web 服务器: ${WEB_SERVER}
 域名: ${domain}
-目录: ${install_dir}
+安装目录: ${install_dir}
+访问地址: https://${domain}
 
 数据库信息
 ----------
 类型: PostgreSQL
+主机: 127.0.0.1
+端口: ${db_port}
 数据库名: ${db_name}
 数据库用户: ${db_user}
 数据库密码: ${db_pass}
 
-访问地址
+默认账号
 --------
-前台: https://${domain}
-默认用户: admin
+用户名: admin
 默认密码: password
+⚠️  请立即修改！
 
 配置文件
 --------
-TTRSS: ${install_dir}/config.php
-${WEB_SERVER}: ${SITES_AVAIL}/${domain}.conf
+TTRSS 配置: ${install_dir}/config.php (putenv 方式)
+Web 服务器: ${SITES_AVAIL}/${domain}.conf
 SSL 证书: ${ssl_cert}
+SSL 密钥: ${ssl_key}
 更新服务: /etc/systemd/system/ttrss-update.service
+
+重要目录
+--------
+锁目录: ${install_dir}/lock
+缓存目录: ${install_dir}/cache
+图标目录: ${install_dir}/feed-icons
 
 管理命令
 --------
-查看更新服务状态: systemctl status ttrss-update
-重启更新服务: systemctl restart ttrss-update
-查看日志: tail -f /var/log/${WEB_SERVER}/${domain}.access.log
-重启 Web 服务: systemctl reload ${SERVICE_NAME}
+查看更新服务状态:
+  systemctl status ttrss-update
 
-重要提示
+重启更新服务:
+  systemctl restart ttrss-update
+
+查看更新日志:
+  journalctl -u ttrss-update -f
+
+查看访问日志:
+  tail -f /var/log/${WEB_SERVER}/${domain}.access.log
+
+查看错误日志:
+  tail -f /var/log/${WEB_SERVER}/${domain}.error.log
+
+重启 Web 服务:
+  systemctl reload ${SERVICE_NAME}
+
+首次设置步骤
+------------
+1. 访问: https://${domain}
+2. 使用默认账号登录 (admin/password)
+3. 立即修改密码！
+4. 访问 设置 → 偏好设置 进行个性化配置
+5. 添加 RSS 订阅源
+
+配置说明
 --------
-⚠️  请立即修改默认密码！
-⚠️  访问后台: https://${domain}/?do=prefPrefs
+配置文件使用 putenv() 方式，环境变量前缀为 TTRSS_
+主要配置项：
+  - TTRSS_DB_TYPE: 数据库类型
+  - TTRSS_DB_HOST: 数据库主机（使用 127.0.0.1）
+  - TTRSS_SELF_URL_PATH: 访问 URL
+  - TTRSS_SIMPLE_UPDATE_MODE: 简单更新模式
+  - TTRSS_PHP_EXECUTABLE: PHP 路径
 
-生成时间: $(date)
+故障排查
+--------
+如果页面无法访问：
+  1. 检查 Web 服务: systemctl status ${SERVICE_NAME}
+  2. 检查 PHP-FPM: systemctl status php*-fpm
+  3. 检查错误日志
+
+如果 Feed 不更新：
+  1. 检查更新服务: systemctl status ttrss-update
+  2. 查看更新日志: journalctl -u ttrss-update
+  3. 确认数据库连接正常
+
+备份建议
+--------
+1. 数据库备份:
+   sudo -u postgres pg_dump ${db_name} > ttrss-backup-\$(date +%F).sql
+
+2. 配置备份:
+   tar czf ttrss-config-\$(date +%F).tar.gz ${install_dir}/config.php
+
+3. 完整备份:
+   tar czf ttrss-full-\$(date +%F).tar.gz ${install_dir}
+
+安全提示
+--------
+⚠️  立即修改默认密码！
+⚠️  定期备份数据库
+⚠️  保护好数据库密码
+⚠️  使用 HTTPS 访问
+⚠️  定期更新 TTRSS
+
+========================================
 INFO
     
     chmod 600 "$install_dir/TTRSS-INFO.txt"
@@ -1085,9 +1352,13 @@ INFO
     echo ""
     print_success "Tiny Tiny RSS 安装完成！"
     echo ""
+    echo "=========================================="
     cat "$install_dir/TTRSS-INFO.txt"
+    echo "=========================================="
     echo ""
-    print_warning "请立即访问并修改默认密码！"
+    print_warning "⚠️  重要：请立即访问 https://${domain} 并修改默认密码！"
+    echo ""
+    print_info "信息已保存到: $install_dir/TTRSS-INFO.txt"
     
     press_enter
 }
