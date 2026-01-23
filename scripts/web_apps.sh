@@ -855,6 +855,17 @@ install_ttrss() {
     
     ensure_config_dirs
     
+    # 检测 PostgreSQL 端口
+    print_info "检测 PostgreSQL 配置..."
+    local detected_pg_port=$(sudo -u postgres psql -t -c "SHOW port;" 2>/dev/null | tr -d ' ')
+    
+    if [ -z "$detected_pg_port" ]; then
+        print_warning "无法检测 PostgreSQL 端口，使用默认值 5432"
+        detected_pg_port="5432"
+    else
+        print_success "检测到 PostgreSQL 端口: $detected_pg_port"
+    fi
+    
     # 配置参数
     read -p "域名 (如: rss.example.com): " domain
     if [ -z "$domain" ]; then
@@ -867,7 +878,7 @@ install_ttrss() {
     local db_name="ttrss"
     local db_user="ttrss"
     local db_pass=""
-    local db_port="5432"
+    local db_port="$detected_pg_port"
     local overwrite_install=false
     
     # 检查是否已存在
@@ -906,8 +917,8 @@ install_ttrss() {
                     
                     # 停止更新守护进程
                     print_info "停止服务..."
-                    systemctl stop ttrss-update 2>/dev/null || true
-                    systemctl disable ttrss-update 2>/dev/null || true
+                    systemctl stop tt-rss-update 2>/dev/null || true
+                    systemctl disable tt-rss-update 2>/dev/null || true
                     
                     # 备份
                     backup_site "$install_dir"
@@ -922,7 +933,7 @@ install_ttrss() {
                     sudo -u postgres psql -c "DROP USER IF EXISTS ${db_user};" 2>/dev/null || true
                     
                     # 删除服务文件
-                    rm -f /etc/systemd/system/ttrss-update.service
+                    rm -f /etc/systemd/system/tt-rss-update.service
                     systemctl daemon-reload
                     ;;
                 2)
@@ -930,7 +941,7 @@ install_ttrss() {
                     overwrite_install=false
                     
                     # 停止服务
-                    systemctl stop ttrss-update 2>/dev/null || true
+                    systemctl stop tt-rss-update 2>/dev/null || true
                     ;;
                 3)
                     print_info "已取消"
@@ -972,6 +983,30 @@ install_ttrss() {
     read -p "数据库端口 (默认: ${db_port}): " custom_db_port
     db_port=${custom_db_port:-$db_port}
     
+    # 验证端口是否正确
+    if ! sudo -u postgres psql -h 127.0.0.1 -p "$db_port" -c "\q" 2>/dev/null; then
+        print_warning "无法连接到端口 ${db_port}，请检查 PostgreSQL 配置"
+        echo ""
+        print_info "可用的检查命令："
+        echo "  sudo -u postgres psql -c 'SHOW port;'"
+        echo "  sudo netstat -tulnp | grep postgres"
+        echo ""
+        read -p "是否继续？[y/N]: " continue_anyway
+        if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+            press_enter
+            return
+        fi
+    fi
+    
+    # 更新守护进程配置
+    echo ""
+    print_info "更新守护进程配置"
+    read -p "并发任务数 (默认: 10): " update_tasks
+    update_tasks=${update_tasks:-10}
+    
+    read -p "更新间隔(分钟) (默认: 3): " update_interval
+    update_interval=${update_interval:-3}
+    
     echo ""
     print_info "安装配置："
     echo "  Web 服务器: ${WEB_SERVER}"
@@ -981,6 +1016,8 @@ install_ttrss() {
     echo "  数据库名: ${db_name}"
     echo "  数据库用户: ${db_user}"
     echo "  数据库端口: ${db_port}"
+    echo "  并发任务: ${update_tasks}"
+    echo "  更新间隔: ${update_interval} 分钟"
     echo "  模式: $([ "$overwrite_install" = true ] && echo '全新安装' || echo '重新配置')"
     echo ""
     
@@ -1024,7 +1061,7 @@ install_ttrss() {
     print_info "[${step_num}/6] 配置 Tiny Tiny RSS..."
     cd "$install_dir"
     
-    # 创建新的配置文件（使用 putenv）
+    # 创建简化的配置文件（使用 putenv）
     cat > config.php << 'TTRSSCONFIG'
 <?php
 // ************************************
@@ -1032,43 +1069,18 @@ install_ttrss() {
 // ************************************
 
 // PostgreSQL 数据库配置
-putenv('TTRSS_DB_TYPE=pgsql');          // 数据库类型
-putenv('TTRSS_DB_HOST=127.0.0.1');      // 使用 127.0.0.1 避免 socket 问题
-putenv('TTRSS_DB_PORT=DB_PORT_PLACEHOLDER');  // PostgreSQL 端口
-putenv('TTRSS_DB_NAME=DB_NAME_PLACEHOLDER');  // 数据库名
-putenv('TTRSS_DB_USER=DB_USER_PLACEHOLDER');  // 数据库用户
-putenv('TTRSS_DB_PASS=DB_PASS_PLACEHOLDER');  // 数据库密码
+putenv('TTRSS_DB_TYPE=pgsql');
+putenv('TTRSS_DB_HOST=127.0.0.1');
+putenv('TTRSS_DB_PORT=DB_PORT_PLACEHOLDER');
+putenv('TTRSS_DB_NAME=DB_NAME_PLACEHOLDER');
+putenv('TTRSS_DB_USER=DB_USER_PLACEHOLDER');
+putenv('TTRSS_DB_PASS=DB_PASS_PLACEHOLDER');
 
 // TTRSS 访问 URL
-putenv('TTRSS_SELF_URL_PATH=SELF_URL_PLACEHOLDER'); // 实际访问地址
+putenv('TTRSS_SELF_URL_PATH=SELF_URL_PLACEHOLDER');
 
 // PHP CLI 路径
 putenv('TTRSS_PHP_EXECUTABLE=/usr/bin/php');
-
-// 单用户模式（可选，适合个人使用）
-// putenv('TTRSS_SINGLE_USER_MODE=true');
-
-// 简单更新模式（推荐）
-putenv('TTRSS_SIMPLE_UPDATE_MODE=true');
-
-// 禁用注册（可选）
-// putenv('TTRSS_ENABLE_REGISTRATION=false');
-
-// Session cookie 生命周期
-putenv('TTRSS_SESSION_COOKIE_LIFETIME=86400');
-
-// 锁目录
-putenv('TTRSS_LOCK_DIRECTORY=lock');
-
-// 缓存目录
-putenv('TTRSS_CACHE_DIR=cache');
-
-// 图标目录
-putenv('TTRSS_ICONS_DIR=feed-icons');
-putenv('TTRSS_ICONS_URL=feed-icons');
-
-// 日志级别（可选）
-// putenv('TTRSS_LOG_LEVEL=E_ALL');
 ?>
 TTRSSCONFIG
     
@@ -1119,7 +1131,7 @@ TTRSSCONFIG
         print_warning "你可能需要检查："
         echo "  1. 数据库连接是否正常"
         echo "  2. 配置文件是否正确: $install_dir/config.php"
-        echo "  3. PostgreSQL 是否运行"
+        echo "  3. PostgreSQL 是否在端口 ${db_port} 监听"
         echo ""
         print_info "手动修复命令："
         echo "  cd $install_dir"
@@ -1227,12 +1239,12 @@ TTRSSCONF
     
     ((step_num++))
     
-    # 配置更新守护进程
-    print_info "[${step_num}/6] 配置更新守护进程..."
+    # 配置更新守护进程（多进程模式）
+    print_info "[${step_num}/6] 配置更新守护进程（多进程模式）..."
     
-    cat > /etc/systemd/system/ttrss-update.service << TTRSSSERVICE
+    cat > /etc/systemd/system/tt-rss-update.service << TTRSSSERVICE
 [Unit]
-Description=Tiny Tiny RSS Update Daemon
+Description=Tiny Tiny RSS update daemon (multi-process)
 After=network.target postgresql.service ${SERVICE_NAME}.service
 Wants=postgresql.service
 
@@ -1241,7 +1253,7 @@ Type=simple
 User=www-data
 Group=www-data
 WorkingDirectory=${install_dir}
-ExecStart=/usr/bin/php ${install_dir}/update_daemon2.php
+ExecStart=/usr/bin/php ${install_dir}/update_daemon2.php --tasks ${update_tasks} --interval ${update_interval} --quiet
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -1251,22 +1263,32 @@ StandardError=journal
 PrivateTmp=yes
 NoNewPrivileges=true
 
+# 资源限制（可选）
+# MemoryMax=512M
+# CPUQuota=50%
+
 [Install]
 WantedBy=multi-user.target
 TTRSSSERVICE
     
     systemctl daemon-reload
-    systemctl enable ttrss-update
-    systemctl start ttrss-update
+    systemctl enable tt-rss-update
+    systemctl start tt-rss-update
     
     # 等待服务启动
-    sleep 2
+    sleep 3
     
     # 检查服务状态
-    if systemctl is-active --quiet ttrss-update; then
+    if systemctl is-active --quiet tt-rss-update; then
         print_success "更新服务已启动"
+        echo ""
+        print_info "更新守护进程配置："
+        echo "  - 并发任务数: ${update_tasks}"
+        echo "  - 更新间隔: ${update_interval} 分钟"
+        echo "  - 静默模式: 已启用"
+        echo "  - 日志: systemd journal (自动轮转)"
     else
-        print_warning "更新服务启动失败，请检查日志: journalctl -u ttrss-update"
+        print_warning "更新服务启动失败，请检查日志: journalctl -u tt-rss-update -n 50"
     fi
     
     # 保存信息
@@ -1289,10 +1311,18 @@ Web 服务器: ${WEB_SERVER}
 ----------
 类型: PostgreSQL
 主机: 127.0.0.1
-端口: ${db_port}
+端口: ${db_port} (自动检测)
 数据库名: ${db_name}
 数据库用户: ${db_user}
 数据库密码: ${db_pass}
+
+更新守护进程
+------------
+并发任务数: ${update_tasks}
+更新间隔: ${update_interval} 分钟
+静默模式: 已启用
+日志方式: systemd journal (自动轮转)
+服务文件: /etc/systemd/system/tt-rss-update.service
 
 默认账号
 --------
@@ -1306,7 +1336,7 @@ TTRSS 配置: ${install_dir}/config.php (putenv 方式)
 Web 服务器: ${SITES_AVAIL}/${domain}.conf
 SSL 证书: ${ssl_cert}
 SSL 密钥: ${ssl_key}
-更新服务: /etc/systemd/system/ttrss-update.service
+更新服务: /etc/systemd/system/tt-rss-update.service
 
 重要目录
 --------
@@ -1314,16 +1344,35 @@ SSL 密钥: ${ssl_key}
 缓存目录: ${install_dir}/cache
 图标目录: ${install_dir}/feed-icons
 
+PostgreSQL 检测
+---------------
+检测到的端口: ${detected_pg_port}
+使用的端口: ${db_port}
+
+检查 PostgreSQL 端口:
+  sudo -u postgres psql -c "SHOW port;"
+  sudo netstat -tulnp | grep postgres
+  sudo ss -tulnp | grep postgres
+
 管理命令
 --------
 查看更新服务状态:
-  systemctl status ttrss-update
+  systemctl status tt-rss-update
 
 重启更新服务:
-  systemctl restart ttrss-update
+  systemctl restart tt-rss-update
 
-查看更新日志:
-  journalctl -u ttrss-update -f
+停止更新服务:
+  systemctl stop tt-rss-update
+
+查看更新日志（实时）:
+  journalctl -u tt-rss-update -f
+
+查看最近日志:
+  journalctl -u tt-rss-update -n 100
+
+查看今天的日志:
+  journalctl -u tt-rss-update --since today
 
 查看访问日志:
   tail -f /var/log/${WEB_SERVER}/${domain}.access.log
@@ -1333,6 +1382,27 @@ SSL 密钥: ${ssl_key}
 
 重启 Web 服务:
   systemctl reload ${SERVICE_NAME}
+
+手动触发更新（测试）:
+  cd ${install_dir}
+  sudo -u www-data php update.php --feeds
+
+日志管理
+--------
+查看 journal 配置:
+  cat /etc/systemd/journald.conf
+
+查看 journal 磁盘使用:
+  journalctl --disk-usage
+
+清理旧日志（保留最近 100MB）:
+  journalctl --vacuum-size=100M
+
+清理旧日志（保留最近 7 天）:
+  journalctl --vacuum-time=7d
+
+只查看错误日志:
+  journalctl -u tt-rss-update -p err
 
 数据库管理
 ----------
@@ -1349,6 +1419,12 @@ SSL 密钥: ${ssl_key}
 连接数据库:
   sudo -u postgres psql -d ${db_name}
 
+测试数据库连接:
+  sudo -u postgres psql -h 127.0.0.1 -p ${db_port} -d ${db_name} -c "SELECT version();"
+
+查看订阅统计:
+  sudo -u postgres psql -d ${db_name} -c "SELECT COUNT(*) FROM ttrss_feeds;"
+
 首次设置步骤
 ------------
 1. 访问: https://${domain}
@@ -1356,16 +1432,50 @@ SSL 密钥: ${ssl_key}
 3. 立即修改密码！
 4. 访问 设置 → 偏好设置 进行个性化配置
 5. 添加 RSS 订阅源
+6. 等待自动更新（间隔 ${update_interval} 分钟）
 
 配置说明
 --------
 配置文件使用 putenv() 方式，环境变量前缀为 TTRSS_
-主要配置项：
+必需配置项：
   - TTRSS_DB_TYPE: 数据库类型
-  - TTRSS_DB_HOST: 数据库主机（使用 127.0.0.1）
+  - TTRSS_DB_HOST: 数据库主机
+  - TTRSS_DB_PORT: 数据库端口（自动检测）
+  - TTRSS_DB_NAME: 数据库名
+  - TTRSS_DB_USER: 数据库用户
+  - TTRSS_DB_PASS: 数据库密码
   - TTRSS_SELF_URL_PATH: 访问 URL
-  - TTRSS_SIMPLE_UPDATE_MODE: 简单更新模式
   - TTRSS_PHP_EXECUTABLE: PHP 路径
+
+其他配置由 TTRSS 自动管理，无需手动设置。
+
+更新守护进程参数:
+  --tasks ${update_tasks}      # 并发更新任务数
+  --interval ${update_interval}    # 更新间隔（分钟）
+  --quiet           # 静默模式，减少日志输出
+
+性能优化建议
+------------
+1. 调整并发任务数:
+   编辑 /etc/systemd/system/tt-rss-update.service
+   修改 --tasks 参数（建议 5-20）
+   systemctl daemon-reload && systemctl restart tt-rss-update
+
+2. 调整更新间隔:
+   修改 --interval 参数（建议 3-30 分钟）
+
+3. 监控资源使用:
+   top -u www-data
+   htop -u www-data
+
+4. 添加资源限制（可选）:
+   编辑服务文件，取消注释:
+   MemoryMax=512M
+   CPUQuota=50%
+
+5. 管理 journal 日志大小:
+   编辑 /etc/systemd/journald.conf
+   设置 SystemMaxUse=100M
 
 故障排查
 --------
@@ -1378,10 +1488,20 @@ SSL 密钥: ${ssl_key}
      cat ${install_dir}/config.php
   
   3. 检查数据库连接:
-     sudo -u postgres psql -d ${db_name} -c "SELECT version();"
+     sudo -u postgres psql -h 127.0.0.1 -p ${db_port} -d ${db_name} -c "SELECT version();"
+
+如果数据库连接失败：
+  1. 检查 PostgreSQL 端口:
+     sudo -u postgres psql -c "SHOW port;"
   
-  4. 检查数据库表:
-     sudo -u postgres psql -d ${db_name} -c "\dt"
+  2. 检查监听地址:
+     sudo -u postgres psql -c "SHOW listen_addresses;"
+  
+  3. 检查 pg_hba.conf:
+     cat /etc/postgresql/*/main/pg_hba.conf | grep "^host"
+  
+  4. 确保允许本地连接:
+     host    all    all    127.0.0.1/32    md5
 
 如果页面无法访问：
   1. 检查 Web 服务: systemctl status ${SERVICE_NAME}
@@ -1389,10 +1509,16 @@ SSL 密钥: ${ssl_key}
   3. 检查错误日志: tail -f /var/log/${WEB_SERVER}/${domain}.error.log
 
 如果 Feed 不更新：
-  1. 检查更新服务: systemctl status ttrss-update
-  2. 查看更新日志: journalctl -u ttrss-update -f
+  1. 检查更新服务: systemctl status tt-rss-update
+  2. 查看更新日志: journalctl -u tt-rss-update -f
   3. 手动运行更新: cd ${install_dir} && sudo -u www-data php update.php --feeds
-  4. 确认数据库连接正常
+  4. 检查订阅源是否有效
+
+如果更新服务频繁重启：
+  1. 查看日志: journalctl -u tt-rss-update -n 200 --no-pager
+  2. 检查 PHP 错误: tail -f /var/log/php*-fpm.log
+  3. 降低并发任务数（--tasks）
+  4. 增加内存限制
 
 备份建议
 --------
@@ -1408,6 +1534,9 @@ SSL 密钥: ${ssl_key}
 4. 恢复数据库:
    sudo -u postgres psql -d ${db_name} < ttrss-backup-YYYY-MM-DD.sql
 
+5. 自动备份（cron）:
+   0 2 * * * sudo -u postgres pg_dump ${db_name} | gzip > /backup/ttrss-\$(date +\%F).sql.gz
+
 安全提示
 --------
 ⚠️  立即修改默认密码！
@@ -1415,13 +1544,18 @@ SSL 密钥: ${ssl_key}
 ⚠️  保护好数据库密码
 ⚠️  使用 HTTPS 访问
 ⚠️  定期更新 TTRSS: cd ${install_dir} && git pull
+⚠️  监控服务状态
+⚠️  限制并发任务避免资源耗尽
+⚠️  定期清理日志: journalctl --vacuum-time=30d
 
 更新 TTRSS
 ----------
 1. 备份数据库和配置
-2. 更新代码: cd ${install_dir} && sudo -u www-data git pull
-3. 更新数据库: sudo -u www-data php update.php --update-schema
-4. 重启服务: systemctl restart ttrss-update
+2. 停止更新服务: systemctl stop tt-rss-update
+3. 更新代码: cd ${install_dir} && sudo -u www-data git pull
+4. 更新数据库: sudo -u www-data php update.php --update-schema
+5. 重启服务: systemctl start tt-rss-update
+6. 检查状态: systemctl status tt-rss-update
 
 ========================================
 INFO
