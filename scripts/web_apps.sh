@@ -3590,7 +3590,7 @@ show_webapp_menu() {
 webapp_menu() {
     while true; do
         show_webapp_menu
-        read -p "请选择 [0-10]: " choice
+        read -p "请选择 [0-11]: " choice
         
         case $choice in
             1)
@@ -3609,31 +3609,96 @@ webapp_menu() {
                 install_rclone
                 ;;
             6)
-                list_sites
+                install_copyparty
                 ;;
             7)
-                view_site_info
+                list_sites
                 ;;
             8)
-                delete_site
+                view_site_info
                 ;;
             9)
-                init_webserver_config
-                if [ "$WEB_SERVER" != "none" ]; then
-                    print_info "正在重启服务..."
-                    systemctl restart "$SERVICE_NAME"
-                    systemctl restart php${PHP_VERSION}-fpm 2>/dev/null || true
-                    systemctl restart mariadb 2>/dev/null || systemctl restart mysql 2>/dev/null || true
-                    systemctl restart postgresql 2>/dev/null || true
-                    systemctl restart tt-rss-update 2>/dev/null || true
-                    supervisorctl restart all 2>/dev/null || true
-                    print_success "服务已重启"
-                else
-                    print_error "未检测到 Web 服务器"
-                fi
-                press_enter
+                delete_site
                 ;;
             10)
+                clear
+                echo "=========================================="
+                echo "   重启服务"
+                echo "=========================================="
+                echo ""
+                
+                init_webserver_config
+                
+                print_info "正在重启服务..."
+                echo ""
+                
+                # 重启 Web 服务器
+                if [ "$WEB_SERVER" != "none" ]; then
+                    print_info "重启 ${WEB_SERVER}..."
+                    systemctl restart "$SERVICE_NAME"
+                    if systemctl is-active --quiet "$SERVICE_NAME"; then
+                        print_success "${WEB_SERVER} 已重启"
+                    else
+                        print_error "${WEB_SERVER} 重启失败"
+                    fi
+                fi
+                
+                # 重启 PHP-FPM
+                if check_php; then
+                    print_info "重启 PHP-FPM..."
+                    systemctl restart php${PHP_VERSION}-fpm 2>/dev/null || systemctl restart php*-fpm 2>/dev/null || true
+                    if systemctl is-active --quiet php${PHP_VERSION}-fpm 2>/dev/null || systemctl is-active --quiet php*-fpm 2>/dev/null; then
+                        print_success "PHP-FPM 已重启"
+                    else
+                        print_warning "PHP-FPM 重启失败或未安装"
+                    fi
+                fi
+                
+                # 重启 MySQL/MariaDB
+                if check_mysql; then
+                    print_info "重启 MySQL/MariaDB..."
+                    systemctl restart mariadb 2>/dev/null || systemctl restart mysql 2>/dev/null || true
+                    if systemctl is-active --quiet mariadb 2>/dev/null || systemctl is-active --quiet mysql 2>/dev/null; then
+                        print_success "MySQL/MariaDB 已重启"
+                    else
+                        print_warning "MySQL/MariaDB 重启失败或未安装"
+                    fi
+                fi
+                
+                # 重启 PostgreSQL
+                if check_postgresql; then
+                    print_info "重启 PostgreSQL..."
+                    systemctl restart postgresql 2>/dev/null || true
+                    if systemctl is-active --quiet postgresql 2>/dev/null; then
+                        print_success "PostgreSQL 已重启"
+                    else
+                        print_warning "PostgreSQL 重启失败或未安装"
+                    fi
+                fi
+                
+                # 重启 TTRSS 更新服务
+                if systemctl list-unit-files | grep -q "tt-rss-update"; then
+                    print_info "重启 TTRSS 更新服务..."
+                    systemctl restart tt-rss-update 2>/dev/null || true
+                    if systemctl is-active --quiet tt-rss-update 2>/dev/null; then
+                        print_success "TTRSS 更新服务已重启"
+                    else
+                        print_warning "TTRSS 更新服务重启失败"
+                    fi
+                fi
+                
+                # 重启 Supervisor
+                if command -v supervisorctl &> /dev/null; then
+                    print_info "重启 Supervisor 服务..."
+                    supervisorctl restart all 2>/dev/null || true
+                    print_success "Supervisor 服务已重启"
+                fi
+                
+                echo ""
+                print_success "所有服务重启完成"
+                press_enter
+                ;;
+            11)
                 diagnose
                 ;;
             0)
