@@ -2704,8 +2704,24 @@ install_copyparty() {
     # 创建配置文件
     print_info "[4/7] 创建配置文件..."
     
-    # 生成管理员密码哈希
-    local admin_hash=$(python3 -c "import hashlib; import base64; print(base64.b64encode(hashlib.sha256('${admin_pass}'.encode()).digest()).decode()[:12])")
+    # 使用 copyparty 生成管理员密码哈希（argon2）
+    print_info "生成 argon2 密码哈希..."
+    local admin_hash=$(cd "${install_dir}" && python3 copyparty.py --ah-alg argon2 --ah-gen "${admin_user}:${admin_pass}" 2>/dev/null | grep -oP '(?<=: ).*')
+    
+    if [ -z "$admin_hash" ]; then
+        print_error "密码哈希生成失败"
+        echo ""
+        print_warning "可能的原因："
+        echo "  1. copyparty.py 文件损坏"
+        echo "  2. Python 依赖缺失"
+        echo "  3. argon2 库未安装"
+        echo ""
+        print_info "尝试手动生成："
+        echo "  cd ${install_dir}"
+        echo "  python3 copyparty.py --ah-alg argon2 --ah-gen ${admin_user}:${admin_pass}"
+        press_enter
+        return 1
+    fi
     
     # 创建配置目录
     mkdir -p /etc/copyparty
@@ -2720,6 +2736,9 @@ install_copyparty() {
   i: 127.0.0.1
   p: ${listen_port}
   rproxy: -1
+
+  # 密码算法（使用 argon2）
+  ah-alg: argon2
 
   # 数据库和缓存位置
   hist: ${cache_dir}
@@ -3056,9 +3075,26 @@ Web 错误: /var/log/${WEB_SERVER}/${domain}.error.log
   supervisorctl restart copyparty
 
 配置文件说明:
-  [global]     - 全局配置（端口、缓存、性能等）
+  [global]     - 全局配置（端口、缓存、性能、密码算法等）
   [accounts]   - 用户账号（用户名:密码哈希）
   [/]          - 共享目录配置（路径和权限）
+
+添加新用户:
+  1. 生成密码哈希:
+     cd /var/www/copyparty
+     python3 copyparty.py --ah-alg argon2 --ah-gen username:password
+  
+  2. 编辑配置文件，在 [accounts] 部分添加:
+     username: <生成的哈希值>
+  
+  3. 重启服务:
+     supervisorctl restart copyparty
+
+密码算法说明:
+  当前使用 argon2 算法（推荐）
+  - 更安全的密码哈希算法
+  - 抗暴力破解能力强
+  - 配置项: ah-alg: argon2
 
 更新 Copyparty
 --------------
