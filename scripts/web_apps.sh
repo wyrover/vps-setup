@@ -2747,7 +2747,11 @@ install_copyparty() {
   p: ${listen_port}
   rproxy: -1
 
-  # 密码算法（使用 argon2）
+  # 密码哈希算法（argon2id）
+  # 格式: argon2,timecost,memory_MiB,threads,version
+  # 默认: argon2,3,256,4,19 (3次迭代, 256MB内存, 4线程, v1.3)
+  # 处理时间: ~0.4秒/密码, 内存占用: 256MB
+  # 需要: python3-argon2 (argon2-cffi)
   ah-alg: argon2
 
   # 数据库和缓存位置
@@ -2940,7 +2944,9 @@ Web 服务器: ${WEB_SERVER}
 ----------
 用户名: ${admin_user}
 密码: ${admin_pass}
-⚠️  请妥善保管！
+密码哈希: ${admin_hash}
+哈希算法: argon2id (3次迭代, 256MB内存, 4线程)
+⚠️  请妥善保管密码！
 
 权限配置
 --------
@@ -3100,11 +3106,29 @@ Web 错误: /var/log/${WEB_SERVER}/${domain}.error.log
   3. 重启服务:
      supervisorctl restart copyparty
 
-密码算法说明:
-  当前使用 argon2 算法（推荐）
-  - 更安全的密码哈希算法
-  - 抗暴力破解能力强
-  - 配置项: ah-alg: argon2
+密码哈希算法说明:
+  当前使用: argon2 (推荐)
+  
+  算法参数:
+    argon2,3,256,4,19
+    - 时间成本: 3 次迭代
+    - 内存成本: 256 MiB
+    - 并行度: 4 线程
+    - 版本: 19 (v1.3)
+    - 处理时间: ~0.4秒/密码
+  
+  其他可选算法:
+    --ah-alg scrypt,13,2,8,4,32  # scrypt (需要 openssl)
+    --ah-alg sha2,424242         # sha2-512 (不推荐，较弱)
+  
+  密码格式:
+    - 已哈希: 以 '+' 开头 (如: +OQw89ylnVXowPMKRft4...)
+    - 未哈希: copyparty 会自动哈希并终止
+  
+  依赖要求:
+    - argon2: 需要 python3-argon2 (argon2-cffi)
+    - scrypt: 需要 openssl
+    - sha2: 无额外依赖
 
 更新 Copyparty
 --------------
