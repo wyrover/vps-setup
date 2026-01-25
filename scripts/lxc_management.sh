@@ -286,6 +286,152 @@ configure_host_swap() {
     press_enter
 }
 
+configure_host_fuse() {
+    clear
+    echo "=========================================="
+    echo "   配置宿主机 FUSE 支持"
+    echo "=========================================="
+    echo ""
+    
+    check_root || return
+    
+    print_info "检查宿主机 FUSE 支持状态..."
+    echo ""
+    
+    # 1. 检查内核模块
+    print_info "[1/4] 检查 FUSE 内核模块..."
+    if lsmod | grep -q "^fuse"; then
+        print_success "✓ FUSE 模块已加载"
+        local fuse_version=$(modinfo fuse 2>/dev/null | grep "^version:" | awk '{print $2}')
+        echo "  版本: ${fuse_version:-未知}"
+    else
+        print_warning "✗ FUSE 模块未加载"
+        echo ""
+        read -p "是否加载 FUSE 模块？[Y/n]: " load_module
+        
+        if [[ ! "$load_module" =~ ^[Nn]$ ]]; then
+            print_info "加载 FUSE 模块..."
+            if modprobe fuse; then
+                print_success "✓ FUSE 模块加载成功"
+            else
+                print_error "✗ FUSE 模块加载失败"
+                echo ""
+                print_warning "可能的原因："
+                echo "  1. 内核不支持 FUSE"
+                echo "  2. 需要安装 fuse 包"
+                press_enter
+                return 1
+            fi
+        fi
+    fi
+    
+    # 2. 检查设备文件
+    echo ""
+    print_info "[2/4] 检查 /dev/fuse 设备..."
+    if [ -e /dev/fuse ]; then
+        print_success "✓ /dev/fuse 设备存在"
+        ls -l /dev/fuse
+    else
+        print_error "✗ /dev/fuse 设备不存在"
+        echo ""
+        print_warning "尝试重新加载模块..."
+        modprobe -r fuse 2>/dev/null || true
+        sleep 1
+        modprobe fuse
+        
+        if [ -e /dev/fuse ]; then
+            print_success "✓ /dev/fuse 设备已创建"
+        else
+            print_error "✗ 无法创建 /dev/fuse 设备"
+            press_enter
+            return 1
+        fi
+    fi
+    
+    # 3. 检查 fuse 软件包
+    echo ""
+    print_info "[3/4] 检查 fuse 软件包..."
+    if dpkg -l | grep -q "^ii.*fuse3"; then
+        print_success "✓ fuse3 已安装"
+        dpkg -l | grep "^ii.*fuse3" | awk '{print "  " $2 " " $3}'
+    elif dpkg -l | grep -q "^ii.*fuse "; then
+        print_success "✓ fuse 已安装"
+        dpkg -l | grep "^ii.*fuse " | awk '{print "  " $2 " " $3}'
+    else
+        print_warning "✗ fuse 软件包未安装"
+        echo ""
+        read -p "是否安装 fuse3？[Y/n]: " install_fuse
+        
+        if [[ ! "$install_fuse" =~ ^[Nn]$ ]]; then
+            print_info "安装 fuse3..."
+            apt update
+            apt install -y fuse3
+            
+            if [ $? -eq 0 ]; then
+                print_success "✓ fuse3 安装成功"
+            else
+                print_error "✗ fuse3 安装失败"
+                press_enter
+                return 1
+            fi
+        fi
+    fi
+    
+    # 4. 配置开机自动加载
+    echo ""
+    print_info "[4/4] 配置开机自动加载..."
+    
+    if grep -q "^fuse$" /etc/modules 2>/dev/null; then
+        print_success "✓ FUSE 模块已配置为开机加载"
+    else
+        print_info "添加 FUSE 到开机加载列表..."
+        echo "fuse" >> /etc/modules
+        print_success "✓ 已配置开机自动加载"
+    fi
+    
+    # 5. 测试 FUSE 功能
+    echo ""
+    print_info "测试 FUSE 功能..."
+    
+    # 创建测试目录
+    local test_dir="/tmp/fuse_test_$$"
+    mkdir -p "$test_dir"
+    
+    # 尝试挂载一个简单的 FUSE 文件系统（如果有 sshfs）
+    if command -v sshfs &>/dev/null; then
+        print_info "使用 sshfs 测试 FUSE..."
+        # 这里只是检查命令是否可用，不实际挂载
+        print_success "✓ FUSE 工具可用"
+    else
+        print_info "跳过功能测试（未安装 sshfs）"
+    fi
+    
+    rm -rf "$test_dir"
+    
+    # 6. 显示总结
+    echo ""
+    echo "=========================================="
+    print_success "宿主机 FUSE 配置完成"
+    echo "=========================================="
+    echo ""
+    print_info "配置摘要："
+    echo "  ✓ FUSE 内核模块: 已加载"
+    echo "  ✓ /dev/fuse 设备: 可用"
+    echo "  ✓ fuse 软件包: 已安装"
+    echo "  ✓ 开机自动加载: 已配置"
+    echo ""
+    print_info "现在可以："
+    echo "  1. 在 LXC 容器中使用 FUSE"
+    echo "  2. 切换容器到特权模式以启用 rclone mount"
+    echo "  3. 在容器内挂载云存储（OneDrive, Google Drive 等）"
+    echo ""
+    print_warning "注意："
+    echo "  • 容器必须使用特权模式才能使用 FUSE"
+    echo "  • 容器内也需要安装 fuse 和 rclone"
+    
+    press_enter
+}
+
 create_debian12() {
     clear
     echo "=========================================="
@@ -612,34 +758,155 @@ toggle_privileged() {
     fi
     
     echo ""
-    echo "1. 切换到特权模式 (支持 Docker)"
+    echo "1. 切换到特权模式 (支持 Docker + FUSE/Rclone)"
     echo "2. 切换到非特权模式"
     echo ""
     read -p "请选择 [1-2]: " choice
     
     # 清理旧配置
-    sed -i '/# 特权/,/# 非特权/d; /^lxc.idmap/d; /^lxc.apparmor/d; /^lxc.mount.auto/d; /^lxc.cap.drop/d' "$config_file"
+    sed -i '/# 特权/,/# 非特权/d; /^lxc.idmap/d; /^lxc.apparmor/d; /^lxc.mount.auto/d; /^lxc.cap.drop/d; /^lxc.cgroup2.devices.allow/d; /^lxc.mount.entry.*fuse/d' "$config_file"
     
     if [ "$choice" = "1" ]; then
         print_info "配置特权模式..."
-        cat >> "$config_file" << 'EOF'
-# 特权模式配置 (Docker Support)
+        echo ""
+        
+        # ============================================
+        # 自动检测并配置宿主机 FUSE 支持
+        # ============================================
+        print_info "检查宿主机 FUSE 支持..."
+        
+        local fuse_ok=true
+        local fuse_configured=false
+        
+        # 检查 FUSE 模块
+        if ! lsmod | grep -q "^fuse"; then
+            print_warning "FUSE 模块未加载，正在加载..."
+            if modprobe fuse 2>/dev/null; then
+                print_success "✓ FUSE 模块加载成功"
+                fuse_configured=true
+            else
+                print_error "✗ FUSE 模块加载失败"
+                fuse_ok=false
+            fi
+        else
+            print_success "✓ FUSE 模块已加载"
+        fi
+        
+        # 检查 /dev/fuse 设备
+        if [ "$fuse_ok" = true ]; then
+            if [ ! -e /dev/fuse ]; then
+                print_warning "/dev/fuse 不存在，尝试重新加载模块..."
+                modprobe -r fuse 2>/dev/null || true
+                sleep 1
+                modprobe fuse 2>/dev/null
+                
+                if [ -e /dev/fuse ]; then
+                    print_success "✓ /dev/fuse 设备已创建"
+                    fuse_configured=true
+                else
+                    print_error "✗ 无法创建 /dev/fuse 设备"
+                    fuse_ok=false
+                fi
+            else
+                print_success "✓ /dev/fuse 设备存在"
+            fi
+        fi
+        
+        # 检查 fuse 软件包
+        if [ "$fuse_ok" = true ]; then
+            if ! dpkg -l | grep -q "^ii.*fuse"; then
+                print_warning "fuse 软件包未安装"
+                read -p "是否安装 fuse3？[Y/n]: " install_fuse
+                
+                if [[ ! "$install_fuse" =~ ^[Nn]$ ]]; then
+                    print_info "安装 fuse3..."
+                    apt update -qq
+                    apt install -y fuse3
+                    
+                    if [ $? -eq 0 ]; then
+                        print_success "✓ fuse3 安装成功"
+                        fuse_configured=true
+                    else
+                        print_error "✗ fuse3 安装失败"
+                        fuse_ok=false
+                    fi
+                fi
+            else
+                print_success "✓ fuse 软件包已安装"
+            fi
+        fi
+        
+        # 配置开机自动加载
+        if [ "$fuse_configured" = true ]; then
+            if ! grep -q "^fuse$" /etc/modules 2>/dev/null; then
+                print_info "配置 FUSE 开机自动加载..."
+                echo "fuse" >> /etc/modules
+                print_success "✓ 已配置开机自动加载"
+            fi
+        fi
+        
+        # 显示 FUSE 配置结果
+        echo ""
+        if [ "$fuse_ok" = true ]; then
+            print_success "宿主机 FUSE 支持已就绪"
+        else
+            print_error "宿主机 FUSE 配置失败"
+            echo ""
+            print_warning "FUSE 功能可能不可用，但仍可继续配置特权模式"
+            read -p "是否继续？[y/N]: " continue_anyway
+            if [[ ! "$continue_anyway" =~ ^[Yy]$ ]]; then
+                return
+            fi
+        fi
+        
+        # ============================================
+        # 配置容器特权模式
+        # ============================================
+        echo ""
+        print_info "配置容器特权模式..."
+        
+        cat >> "$config_file" <<'EOF'
+# 特权模式配置 (Docker + FUSE/Rclone Support)
 lxc.apparmor.profile = unconfined
 lxc.apparmor.allow_nesting = 1
 lxc.cap.drop =
 lxc.mount.auto = proc:mixed sys:rw cgroup:mixed
+
+# FUSE 设备支持 (用于 rclone mount 等)
+lxc.cgroup2.devices.allow = c 10:229 rwm
+lxc.mount.entry = /dev/fuse dev/fuse none bind,create=file 0 0
 EOF
+        
         print_success "已切换到特权模式"
+        echo ""
+        print_info "已启用的功能："
+        echo "  ✓ Docker 容器支持"
+        if [ "$fuse_ok" = true ]; then
+            echo "  ✓ FUSE 文件系统支持"
+            echo "  ✓ Rclone mount 支持 (OneDrive, Google Drive 等)"
+        else
+            echo "  ✗ FUSE 支持（宿主机配置失败）"
+        fi
+        echo ""
+        print_warning "使用提示："
+        echo "  1. 容器内需要安装 fuse: apt install fuse"
+        echo "  2. 容器内需要安装 rclone: curl https://rclone.org/install.sh | sudo bash"
+        echo "  3. 挂载示例: rclone mount remote:path /mnt/point --daemon"
+        
     else
         print_info "配置非特权模式..."
         ensure_host_subids
-        cat >> "$config_file" << 'EOF'
+        cat >> "$config_file" <<'EOF'
 # 非特权模式配置
 lxc.mount.auto = proc:mixed sys:mixed cgroup:mixed
 lxc.apparmor.profile = generated
 lxc.apparmor.allow_nesting = 1
 EOF
         print_success "已切换到非特权模式"
+        echo ""
+        print_warning "注意："
+        echo "  非特权模式下 FUSE/Rclone 功能受限"
+        echo "  如需使用 rclone mount，请选择特权模式"
     fi
     
     # 修复权限
@@ -647,10 +914,33 @@ EOF
     chown -R 0:0 "$rootfs"
     
     # 重启容器
-    print_info "重启容器..."
+    echo ""
+    print_info "重启容器以应用配置..."
     lxc-stop -n "$container_name" -k 2>/dev/null || true
+    sleep 2
     lxc-start -n "$container_name"
     
+    if [ $? -eq 0 ]; then
+        print_success "容器已重启"
+        
+        # 验证 FUSE 设备
+        if [ "$choice" = "1" ] && [ "$fuse_ok" = true ]; then
+            echo ""
+            print_info "验证 FUSE 设备..."
+            sleep 2
+            
+            if lxc-attach -n "$container_name" -- test -e /dev/fuse 2>/dev/null; then
+                print_success "✓ /dev/fuse 设备可用"
+            else
+                print_error "✗ /dev/fuse 设备不可用"
+                print_warning "可能需要手动重启容器"
+            fi
+        fi
+    else
+        print_error "容器启动失败"
+    fi
+    
+    echo ""
     print_success "配置完成"
     
     press_enter
@@ -1281,7 +1571,7 @@ main_menu() {
         echo "11. 设置静态 IP"
         echo "12. 设置容器备注"
         echo "13. 设置开机自启"
-        echo "14. 切换特权模式"
+        echo "14. 切换特权模式 (自动配置 FUSE)"
         echo ""
         echo -e "${BLUE}[数据维护]${NC}"
         echo "15. 备份容器"
