@@ -2692,29 +2692,84 @@ install_copyparty() {
         return
     fi
     
-    # 创建 Supervisor 配置
-    print_info "[4/7] 配置 Supervisor..."
+    # 创建配置文件
+    print_info "[4/7] 创建配置文件..."
     
-    cat > /etc/supervisor/conf.d/copyparty.conf << COPYCONF
+    # 生成管理员密码哈希
+    local admin_hash=$(python3 -c "import hashlib; import base64; print(base64.b64encode(hashlib.sha256('${admin_pass}'.encode()).digest()).decode()[:12])")
+    
+    # 创建配置目录
+    mkdir -p /etc/copyparty
+    
+    # 创建配置文件
+    cat > /etc/copyparty/copyparty.conf << COPYCONF
+# Copyparty 配置文件
+# 官方文档: https://github.com/9001/copyparty
+
+[global]
+  # 监听地址和端口（反向代理模式）
+  i: 127.0.0.1
+  p: ${listen_port}
+  rproxy: -1
+
+  # 数据库和缓存位置
+  hist: ${cache_dir}
+
+  # 缩略图配置
+  no-vthumb
+
+  # 缩略图缓存清理：每12小时运行一次，删除30天未使用的缩略图
+  th-clean: 43200
+  th-maxage: 2592000
+
+  # 启用索引和媒体标签扫描
+  e2d
+  e2ts
+
+  # 标签扫描配置
+  mtag-mt: 2
+  mtag-to: 10
+
+  # 文件系统重扫描和数据库调度
+  re-maxage: 0
+  db-act: 60
+
+  # 并发配置
+  j: 4
+  nc: 128
+  th-mt: 4
+
+  # 功能开关（性能优化）
+  no-dhash
+  no-acode
+  no-voldump
+  no-dirsz
+  no-clone
+  no-scandir
+
+  # 禁用文件哈希
+  no-hash: .*
+
+[accounts]
+  ${admin_user}: ${admin_hash}
+
+[/]
+  # Web "/" 映射到文件系统 ${share_dir}
+  ${share_dir}
+  accs:
+    A: ${admin_user}
+COPYCONF
+
+    chown root:root /etc/copyparty/copyparty.conf
+    chmod 644 /etc/copyparty/copyparty.conf
+    print_success "配置文件创建完成: /etc/copyparty/copyparty.conf"
+    
+    # 创建 Supervisor 配置
+    print_info "[5/7] 配置 Supervisor..."
+    
+    cat > /etc/supervisor/conf.d/copyparty.conf << SUPCONF
 [program:copyparty]
-command=/usr/bin/nice -n 10 /usr/bin/python3 ${install_dir}/copyparty.py \
-    -i 127.0.0.1 \
-    -p ${listen_port} \
-    -a ${admin_user}:${admin_pass} \
-    -v ${share_dir}::A,${admin_user} \
-    -e2d \
-    -e2ts \
-    --hist ${cache_dir} \
-    -j 16 \
-    -nc 64 \
-    --no-acode \
-    --rproxy -1 \
-    --no-voldump \
-    --no-thumb \
-    --no-hash .* \
-    --no-clone \
-    --no-scandir \
-    --db-act 0
+command=/usr/bin/nice -n 10 /usr/bin/python3 ${install_dir}/copyparty.py -c /etc/copyparty/copyparty.conf
 directory=${install_dir}
 autostart=true
 autorestart=true
@@ -2726,20 +2781,20 @@ stdout_logfile_backups=3
 environment=PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 startsecs=10
 startretries=3
-COPYCONF
+SUPCONF
     
     supervisorctl reread
     supervisorctl update
     print_success "Supervisor 配置完成"
     
     # 生成 SSL 证书
-    print_info "[5/7] 生成 SSL 证书..."
+    print_info "[6/7] 生成 SSL 证书..."
     local ssl_files=$(generate_ssl_cert "$domain")
     local ssl_cert=$(echo "$ssl_files" | cut -d: -f1)
     local ssl_key=$(echo "$ssl_files" | cut -d: -f2)
     
     # 创建 Nginx 反向代理配置
-    print_info "[6/7] 配置 ${WEB_SERVER}..."
+    print_info "[7/7] 配置 ${WEB_SERVER}..."
     cat > "${SITES_AVAIL}/${domain}.conf" << COPYPROXYCONF
 server {
     listen 80;
@@ -2805,7 +2860,7 @@ COPYPROXYCONF
     reload_webserver
     
     # 启动服务
-    print_info "[7/7] 启动 Copyparty..."
+    print_info "启动 Copyparty..."
     sleep 3
     
     if supervisorctl status copyparty | grep -q "RUNNING"; then
@@ -2866,9 +2921,10 @@ Web 服务器: ${WEB_SERVER}
 
 配置文件
 --------
-Copyparty: ${install_dir}/copyparty.py
-Supervisor: /etc/supervisor/conf.d/copyparty.conf
-Web 服务器: ${SITES_AVAIL}/${domain}.conf
+Copyparty 主程序: ${install_dir}/copyparty.py
+Copyparty 配置: /etc/copyparty/copyparty.conf
+Supervisor 配置: /etc/supervisor/conf.d/copyparty.conf
+Web 服务器配置: ${SITES_AVAIL}/${domain}.conf
 SSL 证书: ${ssl_cert}
 SSL 密钥: ${ssl_key}
 
@@ -2981,6 +3037,19 @@ Web 错误: /var/log/${WEB_SERVER}/${domain}.error.log
   1. 检查 FFmpeg: ffmpeg -version
   2. 检查 Python 库: pip3 list | grep -E 'mutagen|pillow'
   3. 查看错误日志
+
+修改配置
+--------
+编辑配置文件:
+  nano /etc/copyparty/copyparty.conf
+
+修改后重启服务:
+  supervisorctl restart copyparty
+
+配置文件说明:
+  [global]     - 全局配置（端口、缓存、性能等）
+  [accounts]   - 用户账号（用户名:密码哈希）
+  [/]          - 共享目录配置（路径和权限）
 
 更新 Copyparty
 --------------
