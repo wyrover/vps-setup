@@ -869,8 +869,8 @@ toggle_privileged() {
 # 特权模式配置 (Docker + FUSE/Rclone Support)
 lxc.apparmor.profile = unconfined
 lxc.apparmor.allow_nesting = 1
-lxc.cap.drop =
-lxc.mount.auto = proc:mixed sys:rw cgroup:mixed
+#lxc.cap.drop =
+#lxc.mount.auto = proc:mixed sys:rw cgroup:mixed
 
 # FUSE 设备支持 (用于 rclone mount 等)
 lxc.cgroup2.devices.allow = c 10:229 rwm
