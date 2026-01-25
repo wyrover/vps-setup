@@ -72,7 +72,7 @@ check_pgdg_repo() {
 }
 
 
-# 配置 PostgreSQL 官方 APT 源
+# 配置 PostgreSQL 官方 APT 源（手动配置）
 setup_pgdg_repo() {
     clear
     echo "=========================================="
@@ -90,70 +90,8 @@ setup_pgdg_repo() {
         fi
     fi
     
-    print_info "选择配置方式："
-    echo ""
-    echo "1. 自动配置（推荐）"
-    echo "2. 手动配置"
-    echo "0. 取消"
-    echo ""
-    read -p "请选择 [0-2]: " method
-    
-    case $method in
-        1)
-            setup_pgdg_repo_auto
-            ;;
-        2)
-            setup_pgdg_repo_manual
-            ;;
-        0)
-            return
-            ;;
-        *)
-            print_error "无效选择"
-            press_enter
-            return
-            ;;
-    esac
-}
-
-
-# 自动配置 PostgreSQL 官方源
-setup_pgdg_repo_auto() {
-    echo ""
-    print_info "使用自动配置脚本..."
-    echo ""
-    
-    # 安装依赖
-    echo "[步骤 1/3] 安装依赖..."
-    sudo apt update
-    sudo apt install -y postgresql-common ca-certificates
-    print_success "依赖安装完成"
-    
-    # 运行官方配置脚本
-    echo ""
-    echo "[步骤 2/3] 运行官方配置脚本..."
-    if [ -f "/usr/share/postgresql-common/pgdg/apt.postgresql.org.sh" ]; then
-        sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-        print_success "APT 源配置完成"
-    else
-        print_error "配置脚本不存在"
-        print_info "尝试手动配置..."
-        setup_pgdg_repo_manual
-        return
-    fi
-    
-    # 更新软件包列表
-    echo ""
-    echo "[步骤 3/3] 更新软件包列表..."
-    sudo apt update
-    print_success "软件包列表已更新"
-    
-    echo ""
-    print_success "PostgreSQL 官方源配置完成！"
-    echo ""
-    print_info "配置文件: /etc/apt/sources.list.d/pgdg.list"
-    
-    press_enter
+    # 直接执行手动配置
+    setup_pgdg_repo_manual
 }
 
 
@@ -675,6 +613,108 @@ check_mysql() {
 }
 
 
+# 配置 MySQL 官方 APT 源
+setup_mysql_repo() {
+    echo ""
+    print_info "配置 MySQL 官方 APT 源..."
+    echo ""
+    
+    # 安装依赖
+    echo "[步骤 1/4] 安装依赖..."
+    sudo apt update
+    sudo apt install -y wget lsb-release gnupg
+    print_success "依赖安装完成"
+    
+    # 下载并安装 MySQL APT 配置包
+    echo ""
+    echo "[步骤 2/4] 下载 MySQL APT 配置包..."
+    
+    # 使用最新的 MySQL APT 配置包
+    MYSQL_APT_CONFIG="mysql-apt-config_0.8.29-1_all.deb"
+    wget https://dev.mysql.com/get/${MYSQL_APT_CONFIG} -O /tmp/${MYSQL_APT_CONFIG}
+    
+    if [ $? -eq 0 ]; then
+        print_success "下载完成"
+    else
+        print_error "下载失败"
+        return 1
+    fi
+    
+    # 安装配置包（非交互式）
+    echo ""
+    echo "[步骤 3/4] 配置 MySQL APT 源..."
+    
+    # 预配置选择 MySQL 8.0
+    sudo DEBIAN_FRONTEND=noninteractive dpkg -i /tmp/${MYSQL_APT_CONFIG}
+    
+    # 清理
+    rm -f /tmp/${MYSQL_APT_CONFIG}
+    
+    print_success "MySQL APT 源配置完成"
+    
+    # 更新软件包列表
+    echo ""
+    echo "[步骤 4/4] 更新软件包列表..."
+    sudo apt update
+    print_success "软件包列表已更新"
+    
+    echo ""
+    print_success "MySQL 官方源配置完成！"
+    echo ""
+}
+
+
+# 配置 MariaDB 官方 APT 源
+setup_mariadb_repo() {
+    echo ""
+    print_info "配置 MariaDB 官方 APT 源..."
+    echo ""
+    
+    # 安装依赖
+    echo "[步骤 1/4] 安装依赖..."
+    sudo apt update
+    sudo apt install -y curl software-properties-common
+    print_success "依赖安装完成"
+    
+    # 导入 GPG 密钥
+    echo ""
+    echo "[步骤 2/4] 导入 GPG 密钥..."
+    
+    curl -fsSL https://mariadb.org/mariadb_release_signing_key.asc | sudo gpg --dearmor -o /usr/share/keyrings/mariadb-keyring.gpg
+    
+    if [ $? -eq 0 ]; then
+        print_success "GPG 密钥导入完成"
+    else
+        print_error "GPG 密钥导入失败"
+        return 1
+    fi
+    
+    # 创建 APT 源配置文件
+    echo ""
+    echo "[步骤 3/4] 创建 APT 源配置..."
+    
+    CODENAME=$(lsb_release -cs)
+    
+    # MariaDB 11.4 LTS (最新稳定版)
+    sudo sh -c "echo 'deb [signed-by=/usr/share/keyrings/mariadb-keyring.gpg] https://mirrors.aliyun.com/mariadb/repo/11.4/debian ${CODENAME} main' > /etc/apt/sources.list.d/mariadb.list"
+    
+    print_success "APT 源配置完成"
+    echo ""
+    print_info "配置文件内容："
+    cat /etc/apt/sources.list.d/mariadb.list
+    
+    # 更新软件包列表
+    echo ""
+    echo "[步骤 4/4] 更新软件包列表..."
+    sudo apt update
+    print_success "软件包列表已更新"
+    
+    echo ""
+    print_success "MariaDB 官方源配置完成！"
+    echo ""
+}
+
+
 # 安装 MySQL
 install_mysql() {
     clear
@@ -686,29 +726,115 @@ install_mysql() {
     if check_mysql; then
         print_warning "MySQL/MariaDB 已安装"
         mysql --version
-        press_enter
-        return
+        echo ""
+        read -p "是否继续安装其他版本？[y/N]: " continue_install
+        if [[ ! "$continue_install" =~ ^[Yy]$ ]]; then
+            press_enter
+            return
+        fi
     fi
     
-    echo "选择安装版本："
-    echo "1. MySQL (官方版本)"
-    echo "2. MariaDB (开源分支)"
+    echo "选择数据库类型："
+    echo ""
+    echo "1. MySQL 8.0 (官方最新稳定版)"
+    echo "2. MariaDB 11.4 LTS (开源分支，最新长期支持版)"
+    echo "3. 系统默认版本 (Debian 仓库版本)"
+    echo "0. 取消"
     echo ""
     
-    read -p "请选择 [1-2]: " db_type
-    
-    print_info "正在安装..."
-    echo ""
-    
-    sudo apt update
+    read -p "请选择 [0-3]: " db_type
     
     case $db_type in
         1)
+            # MySQL 官方版本
+            echo ""
+            print_info "准备安装 MySQL 8.0..."
+            echo ""
+            
+            # 配置 MySQL 官方源
+            if [ ! -f "/etc/apt/sources.list.d/mysql.list" ]; then
+                print_warning "未检测到 MySQL 官方源"
+                read -p "是否现在配置 MySQL 官方源？[Y/n]: " setup_repo
+                
+                if [[ ! "$setup_repo" =~ ^[Nn]$ ]]; then
+                    setup_mysql_repo
+                    if [ $? -ne 0 ]; then
+                        print_error "源配置失败"
+                        press_enter
+                        return
+                    fi
+                fi
+            else
+                print_success "已配置 MySQL 官方源"
+            fi
+            
+            echo ""
+            print_info "正在安装 MySQL 8.0..."
+            sudo apt update
             sudo apt install -y mysql-server
             ;;
+            
         2)
+            # MariaDB 官方版本
+            echo ""
+            print_info "准备安装 MariaDB 11.4 LTS..."
+            echo ""
+            
+            # 配置 MariaDB 官方源
+            if [ ! -f "/etc/apt/sources.list.d/mariadb.list" ]; then
+                print_warning "未检测到 MariaDB 官方源"
+                read -p "是否现在配置 MariaDB 官方源？[Y/n]: " setup_repo
+                
+                if [[ ! "$setup_repo" =~ ^[Nn]$ ]]; then
+                    setup_mariadb_repo
+                    if [ $? -ne 0 ]; then
+                        print_error "源配置失败"
+                        press_enter
+                        return
+                    fi
+                fi
+            else
+                print_success "已配置 MariaDB 官方源"
+            fi
+            
+            echo ""
+            print_info "正在安装 MariaDB 11.4..."
+            sudo apt update
             sudo apt install -y mariadb-server
             ;;
+            
+        3)
+            # 系统默认版本
+            echo ""
+            print_info "正在安装系统默认版本..."
+            echo ""
+            
+            echo "选择数据库："
+            echo "1. MySQL (系统默认)"
+            echo "2. MariaDB (系统默认)"
+            read -p "请选择 [1-2]: " default_choice
+            
+            sudo apt update
+            
+            case $default_choice in
+                1)
+                    sudo apt install -y mysql-server
+                    ;;
+                2)
+                    sudo apt install -y mariadb-server
+                    ;;
+                *)
+                    print_error "无效选择"
+                    press_enter
+                    return
+                    ;;
+            esac
+            ;;
+            
+        0)
+            return
+            ;;
+            
         *)
             print_error "无效选择"
             press_enter
@@ -721,8 +847,21 @@ install_mysql() {
         echo ""
         print_info "版本: $(mysql --version)"
         echo ""
+        
+        # 检查服务状态
+        if systemctl is-active --quiet mysql; then
+            print_success "MySQL 服务运行中"
+        elif systemctl is-active --quiet mariadb; then
+            print_success "MariaDB 服务运行中"
+        fi
+        
+        echo ""
         print_warning "建议运行安全配置："
         echo "  sudo mysql_secure_installation"
+        echo ""
+        print_info "默认情况下："
+        echo "  • root 用户使用 unix_socket 认证"
+        echo "  • 可以直接使用: sudo mysql"
     else
         print_error "安装失败"
     fi
