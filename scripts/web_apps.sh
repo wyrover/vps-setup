@@ -2766,8 +2766,8 @@ install_copyparty() {
     A: ${admin_user}
 COPYCONF
 
-    chown root:root /etc/copyparty/copyparty.conf
-    chmod 600 /etc/copyparty/copyparty.conf  # 600 权限保护明文密码
+    chown root:www-data /etc/copyparty/copyparty.conf
+    chmod 640 /etc/copyparty/copyparty.conf  # root 可读写，www-data 可读
     print_success "配置文件创建完成: /etc/copyparty/copyparty.conf"
     
     # 创建 Supervisor 配置
@@ -3068,7 +3068,8 @@ Web 错误: /var/log/${WEB_SERVER}/${domain}.error.log
      supervisorctl restart copyparty
 
 安全提示:
-  - 配置文件权限为 600，仅 root 可读
+  - 配置文件权限为 640 (root:www-data)
+  - root 可读写，www-data 仅可读
   - 建议使用强密码
   - 定期更换密码
 
