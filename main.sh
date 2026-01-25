@@ -627,45 +627,42 @@ show_main_menu() {
     echo ""
     echo "【系统管理】"
     echo ""
-    echo "1. 🔒 安全配置"
-    echo "   (SSH密钥、Fail2ban、防火墙等)"
+    echo "1. 🔒 安全与监控"
+    echo "   (SSH密钥、Fail2ban、防火墙、状态查看等)"
     echo ""
     echo "2. ⚙️  系统配置"
     echo "   (Hostname、时区、软件包等)"
     echo ""
-    echo "3. 📊 监控查看"
-    echo "   (Fail2ban状态、防火墙、系统信息等)"
-    echo ""
-    echo "4. 🌐 网络配置"
+    echo "3. 🌐 网络配置"
     echo "   (网络接口、路由、DNS等)"
     echo ""
     echo "【应用管理】"
     echo ""
-    echo "5. 📝 日志管理"
+    echo "4. 📝 日志管理"
     echo "   (日志轮转、查看、清理 - 3天保留)"
     echo ""
-    echo "6. 🗄️  数据库管理"
+    echo "5. 🗄️  数据库管理"
     echo "   (PostgreSQL、MySQL/MariaDB)"
     echo ""
-    echo "7. 🌍 Web服务管理"
+    echo "6. 🌍 Web服务管理"
     echo "   (OpenResty、Nginx、Caddy、PHP8.5、NVM(node)、Supervisor)"
     echo ""
-    echo "8. 🌐 Web应用安装"
+    echo "7. 🌐 Web应用安装"
     echo "   (Tiny Tiny RSS、WordPress、phpMyAdmin 等)"
     echo ""
-    echo "9. 📦 Docker容器管理"
+    echo "8. 📦 Docker容器管理"
     echo "   (Docker 容器创建、管理)"
     echo ""
-    echo "a. 🔲 LXC容器管理"
+    echo "9. 🔲 LXC容器管理"
     echo "   (LXC/LXD 容器创建、管理)"
     echo ""
-    echo "b. ☁️  Rclone 配置"
+    echo "a. ☁️  Rclone 配置"
     echo "   (云存储挂载、配置管理)"
     echo ""
     echo "【测试工具】"
     echo ""
-    echo "c. 🚀 YABS 性能测试 (多种模式)"
-    echo "d. 🎯 融合怪综合测试 (全面评估)"
+    echo "b. 🚀 YABS 性能测试 (多种模式)"
+    echo "c. 🎯 融合怪综合测试 (全面评估)"
     echo ""
     echo "【系统工具】"
     echo ""
@@ -684,46 +681,43 @@ show_main_menu() {
 main_menu() {
     while true; do
         show_main_menu
-        read -p "请选择 [0-9/a-d/i/t/u/h]: " choice
+        read -p "请选择 [0-9/a-c/i/t/u/h]: " choice
         
         case $choice in
             1)
-                run_subscript "security"
+                run_subscript "security_monitoring"
                 ;;
             2)
                 run_subscript "system"
                 ;;
             3)
-                run_subscript "monitoring"
-                ;;
-            4)
                 run_subscript "network"
                 ;;
-            5)
+            4)
                 run_subscript "logrotate_setup"
                 ;;
-            6)
+            5)
                 run_subscript "database_management"
                 ;;
-            7)
+            6)
                 run_subscript "web_server"
                 ;;
-            8)
+            7)
                 run_subscript "web_apps"
                 ;;
-            9)
+            8)
                 run_subscript "container_management"
                 ;;
-            a|A)
+            9)
                 run_subscript "lxc_management"
                 ;;
-            b|B)
+            a|A)
                 run_subscript "rclone_setup"
                 ;;
-            c|C)
+            b|B)
                 yabs_benchmark_menu
                 ;;
-            d|D)
+            c|C)
                 run_fusion_benchmark
                 ;;
             i|I)
