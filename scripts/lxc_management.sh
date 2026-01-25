@@ -911,7 +911,26 @@ EOF
     
     # 修复权限
     print_info "修复文件系统权限..."
-    chown -R 0:0 "$rootfs"
+    
+    # 临时解锁可能被锁定的文件
+    local resolv_conf="${rootfs}/etc/resolv.conf"
+    local was_locked=false
+    
+    if [ -f "$resolv_conf" ]; then
+        # 检查是否被锁定
+        if lsattr "$resolv_conf" 2>/dev/null | grep -q '^....i'; then
+            was_locked=true
+            chattr -i "$resolv_conf" 2>/dev/null || true
+        fi
+    fi
+    
+    # 修改权限
+    chown -R 0:0 "$rootfs" 2>/dev/null || true
+    
+    # 重新锁定文件（如果之前被锁定）
+    if [ "$was_locked" = true ] && [ -f "$resolv_conf" ]; then
+        chattr +i "$resolv_conf" 2>/dev/null || true
+    fi
     
     # 重启容器
     echo ""
