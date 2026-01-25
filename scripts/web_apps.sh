@@ -2126,16 +2126,18 @@ LXCCONFIG
     
     # 构建 rclone 命令
     local RCLONE_CMD="/usr/bin/rclone mount ${remote_name}:${remote_path} ${mount_point} \
---cache-dir ${cache_dir} \
 --vfs-cache-mode full \
---vfs-cache-max-size ${cache_size} \
---vfs-read-chunk-size ${chunk_size} \
+--vfs-cache-max-age 24h \
+--vfs-cache-max-size 2G \
+--buffer-size 256M \
+--vfs-read-chunk-size 64M \
+--vfs-read-chunk-streams 8 \
 --allow-other \
---dir-cache-time 1h \
+--dir-cache-time 24h \
 --poll-interval 1m \
---attr-timeout 1h \
---uid=${WWW_UID} \
---gid=${WWW_GID} \
+--attr-timeout 24h \
+--uid=33 \
+--gid=33 \
 --umask 002"
     
     echo ""
@@ -2143,11 +2145,12 @@ LXCCONFIG
     echo "  环境: $([ "$in_lxc" = true ] && echo "LXC 容器 (${container_name})" || echo '物理机/虚拟机')"
     echo "  远程: ${remote_name}:${remote_path}"
     echo "  挂载点: ${mount_point}"
-    echo "  缓存目录: ${cache_dir}"
-    echo "  缓存大小: ${cache_size}"
-    echo "  读取块: ${chunk_size}"
-    echo "  UID/GID: ${WWW_UID}/${WWW_GID} (www-data)"
+    echo "  UID/GID: 33/33 (www-data)"
     echo "  缓存模式: full (完整缓存)"
+    echo "  缓存大小: 2G"
+    echo "  缓存时间: 24h"
+    echo "  读取块: 64M (8 streams)"
+    echo "  缓冲区: 256M"
     echo ""
     
     read -p "确认配置？[Y/n]: " confirm
@@ -2379,22 +2382,28 @@ Rclone 配置
 
 性能优化建议
 ------------
-1. 根据网络速度调整块大小:
-   慢速网络: --vfs-read-chunk-size 8M
-   快速网络: --vfs-read-chunk-size 32M
+当前配置已优化为高性能模式:
+  • 缓存模式: full (完整缓存)
+  • 缓存大小: 2G
+  • 缓存时间: 24h (目录/属性)
+  • 读取块: 64M × 8 streams (并行读取)
+  • 缓冲区: 256M
 
-2. 根据使用场景调整缓存:
-   只读: --vfs-cache-mode minimal
-   读写: --vfs-cache-mode full
+如需调整参数:
+1. 编辑配置文件:
+   nano /etc/supervisor/conf.d/rclone-${remote_name}.conf
 
-3. 调整缓存大小:
-   编辑 /etc/supervisor/conf.d/rclone-${remote_name}.conf
-   修改 --vfs-cache-max-size 参数
+2. 修改 command 行中的参数:
+   --vfs-cache-max-size 2G        # 缓存大小
+   --vfs-read-chunk-size 64M      # 读取块大小
+   --buffer-size 256M             # 缓冲区大小
+
+3. 重启服务:
    supervisorctl reread && supervisorctl restart rclone-${remote_name}
 
 4. 监控资源使用:
    top -p \$(pgrep rclone)
-   watch -n 1 du -sh ${cache_dir}
+   watch -n 1 du -sh /var/cache/rclone
 
 故障排查
 --------
@@ -2432,14 +2441,14 @@ LXC_TROUBLESHOOT
 
 如果性能慢:
   1. 检查网络: ping -c 5 8.8.8.8
-  2. 检查缓存: du -sh ${cache_dir}
-  3. 增大缓存: --vfs-cache-max-size 4G
-  4. 增大块大小: --vfs-read-chunk-size 32M
+  2. 检查缓存: du -sh /var/cache/rclone
+  3. 当前已使用高性能配置 (2G缓存, 64M×8并行读取)
+  4. 可考虑增大缓存: --vfs-cache-max-size 4G
 
 如果无法写入:
-  1. 检查缓存模式: 确保使用 --vfs-cache-mode full
+  1. 检查缓存模式: 当前已使用 --vfs-cache-mode full
   2. 检查权限: ls -ld ${mount_point}
-  3. 检查 uid/gid: 确保与 www-data 匹配
+  3. 检查 uid/gid: 当前使用 33/33 (www-data)
 
 卸载服务
 --------
