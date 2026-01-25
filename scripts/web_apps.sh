@@ -2658,12 +2658,12 @@ install_copyparty() {
         return
     fi
     
-    # 安装媒体依赖
+    # 安装依赖
     echo ""
-    print_info "[1/7] 安装媒体依赖..."
+    print_info "[1/7] 安装依赖..."
     apt-get update -qq
-    apt-get install -y ffmpeg python3-mutagen python3-pillow
-    print_success "媒体依赖安装完成"
+    apt-get install -y ffmpeg python3-mutagen python3-pillow python3-argon2
+    print_success "依赖安装完成"
     
     # 创建目录
     print_info "[2/7] 创建目录..."
@@ -2706,7 +2706,12 @@ install_copyparty() {
     
     # 使用 copyparty 生成管理员密码哈希（argon2）
     print_info "生成 argon2 密码哈希..."
-    local admin_hash=$(cd "${install_dir}" && python3 copyparty.py --ah-alg argon2 --ah-gen "${admin_user}:${admin_pass}" 2>/dev/null | grep -oP '(?<=: ).*')
+    
+    # copyparty 会输出哈希值然后退出，我们需要捕获输出
+    local hash_output=$(cd "${install_dir}" && python3 copyparty.py --ah-alg argon2 --ah-gen "${admin_user}:${admin_pass}" 2>&1)
+    
+    # 提取哈希值（copyparty 输出的最后一行非空行，通常是以 + 或 $ 开头的哈希）
+    local admin_hash=$(echo "$hash_output" | grep -E '^[+$]' | tail -1)
     
     if [ -z "$admin_hash" ]; then
         print_error "密码哈希生成失败"
@@ -2716,12 +2721,17 @@ install_copyparty() {
         echo "  2. Python 依赖缺失"
         echo "  3. argon2 库未安装"
         echo ""
+        print_info "输出内容："
+        echo "$hash_output"
+        echo ""
         print_info "尝试手动生成："
         echo "  cd ${install_dir}"
         echo "  python3 copyparty.py --ah-alg argon2 --ah-gen ${admin_user}:${admin_pass}"
         press_enter
         return 1
     fi
+    
+    print_success "密码哈希生成成功"
     
     # 创建配置目录
     mkdir -p /etc/copyparty
