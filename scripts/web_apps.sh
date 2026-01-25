@@ -2662,7 +2662,7 @@ install_copyparty() {
     echo ""
     print_info "[1/7] 安装依赖..."
     apt-get update -qq
-    apt-get install -y ffmpeg python3-mutagen python3-pillow python3-argon2
+    apt-get install -y ffmpeg python3-mutagen python3-pillow
     print_success "依赖安装完成"
     
     # 创建目录
@@ -2704,39 +2704,10 @@ install_copyparty() {
     # 创建配置文件
     print_info "[4/7] 创建配置文件..."
     
-    # 使用 copyparty 生成管理员密码哈希（argon2）
-    print_info "生成 argon2 密码哈希..."
-    
-    # copyparty 会输出哈希值然后退出，我们需要捕获输出
-    local hash_output=$(cd "${install_dir}" && python3 copyparty.py --ah-alg argon2 --ah-gen "${admin_user}:${admin_pass}" 2>&1)
-    
-    # 提取哈希值（copyparty 输出的最后一行非空行，通常是以 + 或 $ 开头的哈希）
-    local admin_hash=$(echo "$hash_output" | grep -E '^[+$]' | tail -1)
-    
-    if [ -z "$admin_hash" ]; then
-        print_error "密码哈希生成失败"
-        echo ""
-        print_warning "可能的原因："
-        echo "  1. copyparty.py 文件损坏"
-        echo "  2. Python 依赖缺失"
-        echo "  3. argon2 库未安装"
-        echo ""
-        print_info "输出内容："
-        echo "$hash_output"
-        echo ""
-        print_info "尝试手动生成："
-        echo "  cd ${install_dir}"
-        echo "  python3 copyparty.py --ah-alg argon2 --ah-gen ${admin_user}:${admin_pass}"
-        press_enter
-        return 1
-    fi
-    
-    print_success "密码哈希生成成功"
-    
     # 创建配置目录
     mkdir -p /etc/copyparty
     
-    # 创建配置文件
+    # 创建配置文件（使用明文密码）
     cat > /etc/copyparty/copyparty.conf << COPYCONF
 # Copyparty 配置文件
 # 官方文档: https://github.com/9001/copyparty
@@ -2746,13 +2717,6 @@ install_copyparty() {
   i: 127.0.0.1
   p: ${listen_port}
   rproxy: -1
-
-  # 密码哈希算法（argon2id）
-  # 格式: argon2,timecost,memory_MiB,threads,version
-  # 默认: argon2,3,256,4,19 (3次迭代, 256MB内存, 4线程, v1.3)
-  # 处理时间: ~0.4秒/密码, 内存占用: 256MB
-  # 需要: python3-argon2 (argon2-cffi)
-  ah-alg: argon2
 
   # 数据库和缓存位置
   hist: ${cache_dir}
@@ -2793,7 +2757,7 @@ install_copyparty() {
   no-hash: .*
 
 [accounts]
-  ${admin_user}: ${admin_hash}
+  ${admin_user}: ${admin_pass}
 
 [/]
   # Web "/" 映射到文件系统 ${share_dir}
@@ -2803,7 +2767,7 @@ install_copyparty() {
 COPYCONF
 
     chown root:root /etc/copyparty/copyparty.conf
-    chmod 644 /etc/copyparty/copyparty.conf
+    chmod 600 /etc/copyparty/copyparty.conf  # 600 权限保护明文密码
     print_success "配置文件创建完成: /etc/copyparty/copyparty.conf"
     
     # 创建 Supervisor 配置
@@ -2944,8 +2908,6 @@ Web 服务器: ${WEB_SERVER}
 ----------
 用户名: ${admin_user}
 密码: ${admin_pass}
-密码哈希: ${admin_hash}
-哈希算法: argon2id (3次迭代, 256MB内存, 4线程)
 ⚠️  请妥善保管密码！
 
 权限配置
@@ -3091,44 +3053,24 @@ Web 错误: /var/log/${WEB_SERVER}/${domain}.error.log
   supervisorctl restart copyparty
 
 配置文件说明:
-  [global]     - 全局配置（端口、缓存、性能、密码算法等）
-  [accounts]   - 用户账号（用户名:密码哈希）
+  [global]     - 全局配置（端口、缓存、性能等）
+  [accounts]   - 用户账号（用户名:明文密码）
   [/]          - 共享目录配置（路径和权限）
 
 添加新用户:
-  1. 生成密码哈希:
-     cd /var/www/copyparty
-     python3 copyparty.py --ah-alg argon2 --ah-gen username:password
+  1. 编辑配置文件:
+     nano /etc/copyparty/copyparty.conf
   
-  2. 编辑配置文件，在 [accounts] 部分添加:
-     username: <生成的哈希值>
+  2. 在 [accounts] 部分添加:
+     newuser: newpassword
   
   3. 重启服务:
      supervisorctl restart copyparty
 
-密码哈希算法说明:
-  当前使用: argon2 (推荐)
-  
-  算法参数:
-    argon2,3,256,4,19
-    - 时间成本: 3 次迭代
-    - 内存成本: 256 MiB
-    - 并行度: 4 线程
-    - 版本: 19 (v1.3)
-    - 处理时间: ~0.4秒/密码
-  
-  其他可选算法:
-    --ah-alg scrypt,13,2,8,4,32  # scrypt (需要 openssl)
-    --ah-alg sha2,424242         # sha2-512 (不推荐，较弱)
-  
-  密码格式:
-    - 已哈希: 以 '+' 开头 (如: +OQw89ylnVXowPMKRft4...)
-    - 未哈希: copyparty 会自动哈希并终止
-  
-  依赖要求:
-    - argon2: 需要 python3-argon2 (argon2-cffi)
-    - scrypt: 需要 openssl
-    - sha2: 无额外依赖
+安全提示:
+  - 配置文件权限为 600，仅 root 可读
+  - 建议使用强密码
+  - 定期更换密码
 
 更新 Copyparty
 --------------
