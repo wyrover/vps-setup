@@ -3141,8 +3141,8 @@ INFO
 
 # ============================================
 # 安装 qBittorrent + Jellyfin (组合)
-# qBittorrent: 根路径 /
-# Jellyfin: 子路径 /jellyfin
+# Jellyfin: 根路径 /
+# qBittorrent: 子路径 /bt
 # ============================================
 
 install_qb_jellyfin() {
@@ -3170,8 +3170,8 @@ install_qb_jellyfin() {
     # 配置参数
     echo ""
     print_info "将安装 qBittorrent + Jellyfin 组合"
-    echo "  - qBittorrent: 根路径 /"
-    echo "  - Jellyfin: 子路径 /jellyfin"
+    echo "  - Jellyfin: 根路径 /"
+    echo "  - qBittorrent: 子路径 /bt"
     echo ""
     
     read -p "域名 (如: media.example.com): " domain
@@ -3203,8 +3203,8 @@ install_qb_jellyfin() {
     print_info "安装配置："
     echo "  Web 服务器: ${WEB_SERVER}"
     echo "  域名: ${domain}"
-    echo "  qBittorrent: https://${domain}/ (端口 ${qb_port})"
-    echo "  Jellyfin: https://${domain}/jellyfin (端口 ${jf_port})"
+    echo "  Jellyfin: https://${domain}/ (端口 ${jf_port})"
+    echo "  qBittorrent: https://${domain}/bt (端口 ${qb_port})"
     echo "  下载目录: ${download_dir}"
     echo "  Basic Auth: ${auth_user}"
     echo ""
@@ -3334,36 +3334,17 @@ server {
     
     client_max_body_size 0;
     
-    # Jellyfin 子路径（无需认证）
-    location /jellyfin {
-        return 302 \$scheme://\$host/jellyfin/;
+    # qBittorrent 子路径（需要 Basic Auth）
+    location /bt {
+        return 302 \$scheme://\$host/bt/;
     }
     
-    location /jellyfin/ {
-        proxy_pass http://127.0.0.1:${jf_port};
-        proxy_http_version 1.1;
-        
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_set_header X-Forwarded-Host \$http_host;
-        
-        # WebSocket 支持
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        
-        # 禁用缓冲
-        proxy_buffering off;
-    }
-    
-    # qBittorrent 根路径（需要 Basic Auth）
-    location / {
+    location /bt/ {
         # Basic Auth 认证
         auth_basic "qBittorrent Access";
         auth_basic_user_file ${NGINX_CONF_DIR}/.htpasswd_qbittorrent;
         
-        proxy_pass http://127.0.0.1:${qb_port};
+        proxy_pass http://127.0.0.1:${qb_port}/;
         proxy_http_version 1.1;
         
         proxy_set_header Host \$host;
@@ -3381,6 +3362,25 @@ server {
         proxy_send_timeout 600;
         proxy_read_timeout 600;
         send_timeout 600;
+    }
+    
+    # Jellyfin 根路径（无需认证）
+    location / {
+        proxy_pass http://127.0.0.1:${jf_port};
+        proxy_http_version 1.1;
+        
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$http_host;
+        
+        # WebSocket 支持
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        
+        # 禁用缓冲
+        proxy_buffering off;
     }
 }
 MEDIACONF
@@ -3421,18 +3421,18 @@ MEDIACONF
 --------
 域名: https://${domain}
 
+Jellyfin 媒体服务器
+-------------------
+访问地址: https://${domain}/
+首次访问: 需要完成初始化向导
+
 qBittorrent WebUI
 -----------------
-访问地址: https://${domain}/
+访问地址: https://${domain}/bt
 Basic Auth 用户: ${auth_user}
 Basic Auth 密码: ${auth_pass}
 qBittorrent 用户: admin
 qBittorrent 密码: 查看日志获取临时密码
-
-Jellyfin 媒体服务器
--------------------
-访问地址: https://${domain}/jellyfin
-首次访问: 需要完成初始化向导
 
 服务配置
 --------
@@ -3473,24 +3473,24 @@ SSL 证书: ${ssl_cert}
 
 使用流程
 --------
-1. 访问 qBittorrent (https://${domain}/)
-   - 输入 Basic Auth: ${auth_user} / ${auth_pass}
-   - 登录 qBittorrent: admin / [临时密码]
-   - 下载种子到 ${download_dir}
-
-2. 访问 Jellyfin (https://${domain}/jellyfin)
+1. 访问 Jellyfin (https://${domain}/)
    - 完成初始化向导
    - 添加媒体库: ${download_dir}
    - 播放下载的媒体文件
 
+2. 访问 qBittorrent (https://${domain}/bt)
+   - 输入 Basic Auth: ${auth_user} / ${auth_pass}
+   - 登录 qBittorrent: admin / [临时密码]
+   - 下载种子到 ${download_dir}
+
 安全提示
 --------
-⚠️  修改 qBittorrent WebUI 密码
 ⚠️  创建 Jellyfin 管理员账号（强密码）
+⚠️  修改 qBittorrent WebUI 密码
 ⚠️  定期更新软件
 ⚠️  监控磁盘使用
-⚠️  qBittorrent 有 Basic Auth 保护
 ⚠️  Jellyfin 无 Basic Auth（方便访问）
+⚠️  qBittorrent 有 Basic Auth 保护
 INFO
     
     chmod 600 /root/media-server-info.txt
