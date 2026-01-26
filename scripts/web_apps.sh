@@ -3139,6 +3139,311 @@ INFO
 }
 
 
+# ============================================
+# 安装 qBittorrent-nox
+# ============================================
+
+install_qbittorrent() {
+    clear
+    echo "=========================================="
+    echo "   安装 qBittorrent-nox"
+    echo "=========================================="
+    echo ""
+    
+    check_root || return
+    init_webserver_config
+    ensure_tools
+    
+    # 检查 Web 服务器
+    if [ "$WEB_SERVER" = "none" ]; then
+        print_error "未检测到 Web 服务器 (Nginx/OpenResty)"
+        echo ""
+        print_info "qBittorrent 需要反向代理，请先安装 Web 服务器"
+        press_enter
+        return
+    fi
+    
+    ensure_config_dirs
+    
+    # 配置参数
+    echo ""
+    read -p "域名 (如: qb.example.com): " domain
+    if [ -z "$domain" ]; then
+        print_error "域名不能为空"
+        press_enter
+        return
+    fi
+    
+    local webui_port="8080"
+    local download_dir="/home/qbittorrent-nox/Downloads"
+    
+    # Basic Auth 配置
+    echo ""
+    print_info "配置 Basic Auth 认证"
+    read -p "用户名 (默认: admin): " auth_user
+    auth_user=${auth_user:-admin}
+    
+    read -sp "密码 (留空自动生成): " auth_pass
+    echo ""
+    
+    if [ -z "$auth_pass" ]; then
+        auth_pass=$(generate_password 12)
+        print_info "生成的密码: $auth_pass"
+    fi
+    
+    # 检查是否已安装
+    if systemctl list-unit-files | grep -q "qbittorrent-nox.service"; then
+        echo ""
+        print_warning "qBittorrent-nox 已安装"
+        echo -n "是否覆盖安装? (yes/no): "
+        read -r overwrite
+        if [[ "$overwrite" != "yes" ]]; then
+            print_info "已取消"
+            press_enter
+            return
+        fi
+        
+        # 停止服务
+        systemctl stop qbittorrent-nox 2>/dev/null || true
+        systemctl disable qbittorrent-nox 2>/dev/null || true
+        
+        # 删除旧配置
+        remove_site "$domain"
+        rm -f "${NGINX_CONF_DIR}/.htpasswd_qbittorrent"
+    fi
+    
+    echo ""
+    print_info "安装配置："
+    echo "  Web 服务器: ${WEB_SERVER}"
+    echo "  域名: ${domain}"
+    echo "  WebUI 端口: ${webui_port}"
+    echo "  下载目录: ${download_dir}"
+    echo "  Basic Auth 用户: ${auth_user}"
+    echo ""
+    
+    read -p "确认安装？[Y/n]: " confirm
+    if [[ "$confirm" =~ ^[Nn]$ ]]; then
+        print_info "已取消"
+        press_enter
+        return
+    fi
+    
+    # 安装 qBittorrent-nox
+    echo ""
+    print_info "[1/6] 安装 qBittorrent-nox..."
+    apt update -qq
+    apt install -y qbittorrent-nox
+    print_success "qBittorrent-nox 安装完成"
+    
+    # 创建用户和组
+    print_info "[2/6] 创建用户和组..."
+    groupadd -f -r qbittorrent-nox
+    if ! id "qbittorrent-nox" &>/dev/null; then
+        useradd -m -r -s /usr/sbin/nologin -g qbittorrent-nox qbittorrent-nox
+    fi
+    print_success "用户创建完成"
+    
+    # 创建配置和下载目录
+    print_info "[3/6] 创建目录..."
+    mkdir -p /home/qbittorrent-nox/.config/qBittorrent
+    mkdir -p "$download_dir"
+    
+    # 接受法律声明
+    echo -e "[LegalNotice]\nAccepted=true" > /home/qbittorrent-nox/.config/qBittorrent/qBittorrent.conf
+    
+    chown -R qbittorrent-nox:qbittorrent-nox /home/qbittorrent-nox
+    print_success "目录创建完成"
+    
+    # 创建 Basic Auth
+    print_info "[4/7] 配置 Basic Auth..."
+    htpasswd -bc "${NGINX_CONF_DIR}/.htpasswd_qbittorrent" "$auth_user" "$auth_pass"
+    print_success "Basic Auth 配置完成"
+    
+    # 创建 systemd 服务
+    print_info "[5/7] 配置 systemd 服务..."
+    cat > /etc/systemd/system/qbittorrent-nox.service << 'QBSERVICE'
+[Unit]
+Description=qBittorrent Command Line Client
+After=network.target
+
+[Service]
+User=qbittorrent-nox
+Group=qbittorrent-nox
+UMask=0022
+Type=simple
+ExecStart=/usr/bin/qbittorrent-nox --webui-port=8080
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+QBSERVICE
+    
+    systemctl daemon-reload
+    systemctl enable qbittorrent-nox
+    print_success "systemd 服务配置完成"
+    
+    # 生成 SSL 证书
+    print_info "[6/7] 生成 SSL 证书..."
+    local ssl_files=$(generate_ssl_cert "$domain")
+    local ssl_cert=$(echo "$ssl_files" | cut -d: -f1)
+    local ssl_key=$(echo "$ssl_files" | cut -d: -f2)
+    
+    # 创建 Nginx 反向代理配置
+    print_info "[7/7] 配置 ${WEB_SERVER}..."
+    cat > "${SITES_AVAIL}/${domain}.conf" << QBCONF
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${domain};
+    return 301 https://\$server_name\$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${domain};
+    
+    ssl_certificate ${ssl_cert};
+    ssl_certificate_key ${ssl_key};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    
+    access_log /var/log/${WEB_SERVER}/${domain}.access.log;
+    error_log /var/log/${WEB_SERVER}/${domain}.error.log;
+    
+    # Basic Auth 认证
+    auth_basic "qBittorrent Access";
+    auth_basic_user_file ${NGINX_CONF_DIR}/.htpasswd_qbittorrent;
+    
+    client_max_body_size 0;
+    
+    location / {
+        proxy_pass http://127.0.0.1:${webui_port};
+        proxy_http_version 1.1;
+        
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$http_host;
+        
+        # WebSocket 支持
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        
+        # 超时设置
+        proxy_connect_timeout 600;
+        proxy_send_timeout 600;
+        proxy_read_timeout 600;
+        send_timeout 600;
+    }
+}
+QBCONF
+    
+    mkdir -p "/var/log/${WEB_SERVER}"
+    ln -sf "${SITES_AVAIL}/${domain}.conf" "${SITES_ENABLED}/"
+    reload_webserver
+    
+    # 启动服务
+    print_info "启动 qBittorrent-nox..."
+    systemctl restart qbittorrent-nox
+    
+    echo ""
+    print_info "等待服务启动..."
+    sleep 5
+    
+    # 获取临时密码
+    local temp_pass=""
+    if systemctl is-active --quiet qbittorrent-nox; then
+        print_success "qBittorrent-nox 已启动"
+        
+        # 尝试从日志获取临时密码
+        temp_pass=$(journalctl -u qbittorrent-nox -n 100 --no-pager 2>/dev/null | grep "temporary password" | awk -F': ' '{print $2}' | tail -n 1 | tr -d '[:space:]')
+        
+        if [ -z "$temp_pass" ]; then
+            temp_pass=$(journalctl -u qbittorrent-nox -n 100 --no-pager 2>/dev/null | grep "password" | tail -n 1)
+        fi
+    else
+        print_warning "qBittorrent-nox 启动可能失败，请检查日志"
+        echo ""
+        print_info "查看日志："
+        echo "  journalctl -u qbittorrent-nox -n 50"
+    fi
+    
+    # 保存信息
+    cat > /root/qbittorrent-info.txt << INFO
+qBittorrent-nox 安装信息
+========================
+安装时间: $(date)
+
+访问信息
+--------
+访问地址: https://${domain}
+
+Basic Auth 认证（第一层）
+------------------------
+用户名: ${auth_user}
+密码: ${auth_pass}
+
+qBittorrent WebUI 认证（第二层）
+--------------------------------
+用户名: admin
+临时密码: ${temp_pass:-请查看日志获取}
+
+⚠️  双重认证保护！
+⚠️  首次登录 WebUI 后请立即修改密码！
+
+服务配置
+--------
+WebUI 端口: ${webui_port}
+下载目录: ${download_dir}
+配置目录: /home/qbittorrent-nox/.config/qBittorrent
+
+管理命令
+--------
+查看状态: systemctl status qbittorrent-nox
+启动服务: systemctl start qbittorrent-nox
+停止服务: systemctl stop qbittorrent-nox
+重启服务: systemctl restart qbittorrent-nox
+查看日志: journalctl -u qbittorrent-nox -f
+
+获取密码: journalctl -u qbittorrent-nox -n 50 | grep password
+
+配置文件
+--------
+systemd: /etc/systemd/system/qbittorrent-nox.service
+Web 配置: ${SITES_AVAIL}/${domain}.conf
+Basic Auth: ${NGINX_CONF_DIR}/.htpasswd_qbittorrent
+SSL 证书: ${ssl_cert}
+
+安全提示
+--------
+⚠️  双重认证（Basic Auth + WebUI 密码）
+⚠️  修改 WebUI 默认密码
+⚠️  配置 IP 白名单（可选）
+⚠️  定期更新软件
+⚠️  监控磁盘使用
+INFO
+    
+    chmod 600 /root/qbittorrent-info.txt
+    
+    echo ""
+    print_success "qBittorrent-nox 安装完成！"
+    echo ""
+    cat /root/qbittorrent-info.txt
+    echo ""
+    
+    if [ -n "$temp_pass" ]; then
+        print_info "临时密码: ${temp_pass}"
+    else
+        print_warning "未能获取临时密码，请查看日志："
+        echo "  journalctl -u qbittorrent-nox -n 50 | grep password"
+    fi
+    
+    press_enter
+}
 
 
 
@@ -3659,16 +3964,19 @@ show_webapp_menu() {
     echo "6. 📁 Copyparty (文件服务器)"
     echo "   需要: Nginx/OpenResty + Python3 + Supervisor"
     echo ""
+    echo "7. 📥 qBittorrent-nox (BT 下载)"
+    echo "   需要: Nginx/OpenResty + qbittorrent-nox"
+    echo ""
     echo "【站点管理】"
     echo ""
-    echo "7. 📋 列出所有站点"
-    echo "8. 📄 查看站点信息"
-    echo "9. ❌ 删除站点"
+    echo "8. 📋 列出所有站点"
+    echo "9. 📄 查看站点信息"
+    echo "10. ❌ 删除站点"
     echo ""
     echo "【系统管理】"
     echo ""
-    echo "10. 🔄 重启服务"
-    echo "11. 🔍 系统诊断"
+    echo "11. 🔄 重启服务"
+    echo "12. 🔍 系统诊断"
     echo ""
     echo "0. 返回主菜单"
     echo "=========================================="
@@ -3682,7 +3990,7 @@ show_webapp_menu() {
 webapp_menu() {
     while true; do
         show_webapp_menu
-        read -p "请选择 [0-11]: " choice
+        read -p "请选择 [0-12]: " choice
         
         case $choice in
             1)
@@ -3704,15 +4012,18 @@ webapp_menu() {
                 install_copyparty
                 ;;
             7)
-                list_sites
+                install_qbittorrent
                 ;;
             8)
-                view_site_info
+                list_sites
                 ;;
             9)
-                delete_site
+                view_site_info
                 ;;
             10)
+                delete_site
+                ;;
+            11)
                 clear
                 echo "=========================================="
                 echo "   重启服务"
@@ -3790,7 +4101,7 @@ webapp_menu() {
                 print_success "所有服务重启完成"
                 press_enter
                 ;;
-            11)
+            12)
                 diagnose
                 ;;
             0)
