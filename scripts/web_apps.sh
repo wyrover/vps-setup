@@ -3140,13 +3140,15 @@ INFO
 
 
 # ============================================
-# 安装 qBittorrent-nox
+# 安装 qBittorrent + Jellyfin (组合)
+# qBittorrent: 根路径 /
+# Jellyfin: 子路径 /jellyfin
 # ============================================
 
-install_qbittorrent() {
+install_qb_jellyfin() {
     clear
     echo "=========================================="
-    echo "   安装 qBittorrent-nox"
+    echo "   安装 qBittorrent + Jellyfin"
     echo "=========================================="
     echo ""
     
@@ -3158,7 +3160,7 @@ install_qbittorrent() {
     if [ "$WEB_SERVER" = "none" ]; then
         print_error "未检测到 Web 服务器 (Nginx/OpenResty)"
         echo ""
-        print_info "qBittorrent 需要反向代理，请先安装 Web 服务器"
+        print_info "需要反向代理，请先安装 Web 服务器"
         press_enter
         return
     fi
@@ -3167,19 +3169,25 @@ install_qbittorrent() {
     
     # 配置参数
     echo ""
-    read -p "域名 (如: qb.example.com): " domain
+    print_info "将安装 qBittorrent + Jellyfin 组合"
+    echo "  - qBittorrent: 根路径 /"
+    echo "  - Jellyfin: 子路径 /jellyfin"
+    echo ""
+    
+    read -p "域名 (如: media.example.com): " domain
     if [ -z "$domain" ]; then
         print_error "域名不能为空"
         press_enter
         return
     fi
     
-    local webui_port="8080"
+    local qb_port="8080"
+    local jf_port="8096"
     local download_dir="/home/qbittorrent-nox/Downloads"
     
     # Basic Auth 配置
     echo ""
-    print_info "配置 Basic Auth 认证"
+    print_info "配置 Basic Auth 认证（保护 qBittorrent）"
     read -p "用户名 (默认: admin): " auth_user
     auth_user=${auth_user:-admin}
     
@@ -3191,34 +3199,14 @@ install_qbittorrent() {
         print_info "生成的密码: $auth_pass"
     fi
     
-    # 检查是否已安装
-    if systemctl list-unit-files | grep -q "qbittorrent-nox.service"; then
-        echo ""
-        print_warning "qBittorrent-nox 已安装"
-        echo -n "是否覆盖安装? (yes/no): "
-        read -r overwrite
-        if [[ "$overwrite" != "yes" ]]; then
-            print_info "已取消"
-            press_enter
-            return
-        fi
-        
-        # 停止服务
-        systemctl stop qbittorrent-nox 2>/dev/null || true
-        systemctl disable qbittorrent-nox 2>/dev/null || true
-        
-        # 删除旧配置
-        remove_site "$domain"
-        rm -f "${NGINX_CONF_DIR}/.htpasswd_qbittorrent"
-    fi
-    
     echo ""
     print_info "安装配置："
     echo "  Web 服务器: ${WEB_SERVER}"
     echo "  域名: ${domain}"
-    echo "  WebUI 端口: ${webui_port}"
+    echo "  qBittorrent: https://${domain}/ (端口 ${qb_port})"
+    echo "  Jellyfin: https://${domain}/jellyfin (端口 ${jf_port})"
     echo "  下载目录: ${download_dir}"
-    echo "  Basic Auth 用户: ${auth_user}"
+    echo "  Basic Auth: ${auth_user}"
     echo ""
     
     read -p "确认安装？[Y/n]: " confirm
@@ -3228,39 +3216,33 @@ install_qbittorrent() {
         return
     fi
     
-    # 安装 qBittorrent-nox
+    # ============ 安装 qBittorrent ============
     echo ""
-    print_info "[1/6] 安装 qBittorrent-nox..."
+    echo "=========================================="
+    print_info "第一部分：安装 qBittorrent-nox"
+    echo "=========================================="
+    echo ""
+    
+    print_info "[1/10] 安装 qBittorrent-nox..."
     apt update -qq
     apt install -y qbittorrent-nox
     print_success "qBittorrent-nox 安装完成"
     
-    # 创建用户和组
-    print_info "[2/6] 创建用户和组..."
+    print_info "[2/10] 创建 qBittorrent 用户和组..."
     groupadd -f -r qbittorrent-nox
     if ! id "qbittorrent-nox" &>/dev/null; then
         useradd -m -r -s /usr/sbin/nologin -g qbittorrent-nox qbittorrent-nox
     fi
     print_success "用户创建完成"
     
-    # 创建配置和下载目录
-    print_info "[3/6] 创建目录..."
+    print_info "[3/10] 创建目录..."
     mkdir -p /home/qbittorrent-nox/.config/qBittorrent
     mkdir -p "$download_dir"
-    
-    # 接受法律声明
     echo -e "[LegalNotice]\nAccepted=true" > /home/qbittorrent-nox/.config/qBittorrent/qBittorrent.conf
-    
     chown -R qbittorrent-nox:qbittorrent-nox /home/qbittorrent-nox
     print_success "目录创建完成"
     
-    # 创建 Basic Auth
-    print_info "[4/7] 配置 Basic Auth..."
-    htpasswd -bc "${NGINX_CONF_DIR}/.htpasswd_qbittorrent" "$auth_user" "$auth_pass"
-    print_success "Basic Auth 配置完成"
-    
-    # 创建 systemd 服务
-    print_info "[5/7] 配置 systemd 服务..."
+    print_info "[4/10] 配置 qBittorrent systemd 服务..."
     cat > /etc/systemd/system/qbittorrent-nox.service << 'QBSERVICE'
 [Unit]
 Description=qBittorrent Command Line Client
@@ -3281,17 +3263,54 @@ QBSERVICE
     
     systemctl daemon-reload
     systemctl enable qbittorrent-nox
-    print_success "systemd 服务配置完成"
+    systemctl start qbittorrent-nox
+    print_success "qBittorrent 服务配置完成"
     
-    # 生成 SSL 证书
-    print_info "[6/7] 生成 SSL 证书..."
+    # ============ 安装 Jellyfin ============
+    echo ""
+    echo "=========================================="
+    print_info "第二部分：安装 Jellyfin"
+    echo "=========================================="
+    echo ""
+    
+    print_info "[5/10] 添加 Jellyfin 仓库..."
+    apt install -y curl gnupg lsb-release
+    mkdir -p /etc/apt/keyrings
+    curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg --yes
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/jellyfin.gpg] https://repo.jellyfin.org/debian $(lsb_release -c -s) main" > /etc/apt/sources.list.d/jellyfin.list
+    print_success "仓库添加完成"
+    
+    print_info "[6/10] 安装 Jellyfin..."
+    apt update -qq
+    apt install -y jellyfin
+    print_success "Jellyfin 安装完成"
+    
+    print_info "[7/10] 配置 Jellyfin 权限..."
+    usermod -aG qbittorrent-nox jellyfin
+    chmod g+x /home/qbittorrent-nox
+    chmod -R 750 "$download_dir"
+    systemctl enable jellyfin
+    systemctl restart jellyfin
+    print_success "Jellyfin 权限配置完成"
+    
+    # ============ 配置反向代理 ============
+    echo ""
+    echo "=========================================="
+    print_info "第三部分：配置反向代理"
+    echo "=========================================="
+    echo ""
+    
+    print_info "[8/10] 配置 Basic Auth..."
+    htpasswd -bc "${NGINX_CONF_DIR}/.htpasswd_qbittorrent" "$auth_user" "$auth_pass"
+    print_success "Basic Auth 配置完成"
+    
+    print_info "[9/10] 生成 SSL 证书..."
     local ssl_files=$(generate_ssl_cert "$domain")
     local ssl_cert=$(echo "$ssl_files" | cut -d: -f1)
     local ssl_key=$(echo "$ssl_files" | cut -d: -f2)
     
-    # 创建 Nginx 反向代理配置
-    print_info "[7/7] 配置 ${WEB_SERVER}..."
-    cat > "${SITES_AVAIL}/${domain}.conf" << QBCONF
+    print_info "[10/10] 配置 ${WEB_SERVER}..."
+    cat > "${SITES_AVAIL}/${domain}.conf" << MEDIACONF
 server {
     listen 80;
     listen [::]:80;
@@ -3313,14 +3332,38 @@ server {
     access_log /var/log/${WEB_SERVER}/${domain}.access.log;
     error_log /var/log/${WEB_SERVER}/${domain}.error.log;
     
-    # Basic Auth 认证
-    auth_basic "qBittorrent Access";
-    auth_basic_user_file ${NGINX_CONF_DIR}/.htpasswd_qbittorrent;
-    
     client_max_body_size 0;
     
+    # Jellyfin 子路径（无需认证）
+    location /jellyfin {
+        return 302 \$scheme://\$host/jellyfin/;
+    }
+    
+    location /jellyfin/ {
+        proxy_pass http://127.0.0.1:${jf_port};
+        proxy_http_version 1.1;
+        
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$http_host;
+        
+        # WebSocket 支持
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        
+        # 禁用缓冲
+        proxy_buffering off;
+    }
+    
+    # qBittorrent 根路径（需要 Basic Auth）
     location / {
-        proxy_pass http://127.0.0.1:${webui_port};
+        # Basic Auth 认证
+        auth_basic "qBittorrent Access";
+        auth_basic_user_file ${NGINX_CONF_DIR}/.htpasswd_qbittorrent;
+        
+        proxy_pass http://127.0.0.1:${qb_port};
         proxy_http_version 1.1;
         
         proxy_set_header Host \$host;
@@ -3340,107 +3383,124 @@ server {
         send_timeout 600;
     }
 }
-QBCONF
+MEDIACONF
     
     mkdir -p "/var/log/${WEB_SERVER}"
     ln -sf "${SITES_AVAIL}/${domain}.conf" "${SITES_ENABLED}/"
     reload_webserver
+    print_success "反向代理配置完成"
     
-    # 启动服务
-    print_info "启动 qBittorrent-nox..."
-    systemctl restart qbittorrent-nox
-    
+    # 检查服务状态
     echo ""
-    print_info "等待服务启动..."
-    sleep 5
+    echo "=========================================="
+    print_info "检查服务状态"
+    echo "=========================================="
+    echo ""
     
-    # 获取临时密码
-    local temp_pass=""
+    sleep 3
+    
     if systemctl is-active --quiet qbittorrent-nox; then
-        print_success "qBittorrent-nox 已启动"
-        
-        # 尝试从日志获取临时密码
-        temp_pass=$(journalctl -u qbittorrent-nox -n 100 --no-pager 2>/dev/null | grep "temporary password" | awk -F': ' '{print $2}' | tail -n 1 | tr -d '[:space:]')
-        
-        if [ -z "$temp_pass" ]; then
-            temp_pass=$(journalctl -u qbittorrent-nox -n 100 --no-pager 2>/dev/null | grep "password" | tail -n 1)
-        fi
+        print_success "✓ qBittorrent-nox 运行中"
     else
-        print_warning "qBittorrent-nox 启动可能失败，请检查日志"
-        echo ""
-        print_info "查看日志："
-        echo "  journalctl -u qbittorrent-nox -n 50"
+        print_error "✗ qBittorrent-nox 未运行"
+    fi
+    
+    if systemctl is-active --quiet jellyfin; then
+        print_success "✓ Jellyfin 运行中"
+    else
+        print_error "✗ Jellyfin 未运行"
     fi
     
     # 保存信息
-    cat > /root/qbittorrent-info.txt << INFO
-qBittorrent-nox 安装信息
-========================
+    cat > /root/media-server-info.txt << INFO
+媒体服务器安装信息
+==================
 安装时间: $(date)
 
 访问信息
 --------
-访问地址: https://${domain}
+域名: https://${domain}
 
-Basic Auth 认证（第一层）
-------------------------
-用户名: ${auth_user}
-密码: ${auth_pass}
+qBittorrent WebUI
+-----------------
+访问地址: https://${domain}/
+Basic Auth 用户: ${auth_user}
+Basic Auth 密码: ${auth_pass}
+qBittorrent 用户: admin
+qBittorrent 密码: 查看日志获取临时密码
 
-qBittorrent WebUI 认证（第二层）
---------------------------------
-用户名: admin
-临时密码: ${temp_pass:-请查看日志获取}
-
-⚠️  双重认证保护！
-⚠️  首次登录 WebUI 后请立即修改密码！
+Jellyfin 媒体服务器
+-------------------
+访问地址: https://${domain}/jellyfin
+首次访问: 需要完成初始化向导
 
 服务配置
 --------
-WebUI 端口: ${webui_port}
+qBittorrent 端口: ${qb_port}
+Jellyfin 端口: ${jf_port}
 下载目录: ${download_dir}
-配置目录: /home/qbittorrent-nox/.config/qBittorrent
+Jellyfin 配置: /etc/jellyfin
+Jellyfin 数据: /var/lib/jellyfin
+
+权限配置
+--------
+• Jellyfin 用户已加入 qbittorrent-nox 组
+• Jellyfin 可访问 qBittorrent 下载目录
+• 下载的媒体文件可直接在 Jellyfin 中播放
 
 管理命令
 --------
-查看状态: systemctl status qbittorrent-nox
-启动服务: systemctl start qbittorrent-nox
-停止服务: systemctl stop qbittorrent-nox
-重启服务: systemctl restart qbittorrent-nox
-查看日志: journalctl -u qbittorrent-nox -f
+qBittorrent:
+  systemctl status qbittorrent-nox
+  systemctl restart qbittorrent-nox
+  journalctl -u qbittorrent-nox -f
 
-获取密码: journalctl -u qbittorrent-nox -n 50 | grep password
+Jellyfin:
+  systemctl status jellyfin
+  systemctl restart jellyfin
+  journalctl -u jellyfin -f
+
+获取 qBittorrent 临时密码:
+  journalctl -u qbittorrent-nox -n 50 | grep password
 
 配置文件
 --------
-systemd: /etc/systemd/system/qbittorrent-nox.service
+qBittorrent systemd: /etc/systemd/system/qbittorrent-nox.service
+Jellyfin systemd: /lib/systemd/system/jellyfin.service
 Web 配置: ${SITES_AVAIL}/${domain}.conf
 Basic Auth: ${NGINX_CONF_DIR}/.htpasswd_qbittorrent
 SSL 证书: ${ssl_cert}
 
+使用流程
+--------
+1. 访问 qBittorrent (https://${domain}/)
+   - 输入 Basic Auth: ${auth_user} / ${auth_pass}
+   - 登录 qBittorrent: admin / [临时密码]
+   - 下载种子到 ${download_dir}
+
+2. 访问 Jellyfin (https://${domain}/jellyfin)
+   - 完成初始化向导
+   - 添加媒体库: ${download_dir}
+   - 播放下载的媒体文件
+
 安全提示
 --------
-⚠️  双重认证（Basic Auth + WebUI 密码）
-⚠️  修改 WebUI 默认密码
-⚠️  配置 IP 白名单（可选）
+⚠️  修改 qBittorrent WebUI 密码
+⚠️  创建 Jellyfin 管理员账号（强密码）
 ⚠️  定期更新软件
 ⚠️  监控磁盘使用
+⚠️  qBittorrent 有 Basic Auth 保护
+⚠️  Jellyfin 无 Basic Auth（方便访问）
 INFO
     
-    chmod 600 /root/qbittorrent-info.txt
+    chmod 600 /root/media-server-info.txt
     
     echo ""
-    print_success "qBittorrent-nox 安装完成！"
+    print_success "媒体服务器安装完成！"
     echo ""
-    cat /root/qbittorrent-info.txt
+    cat /root/media-server-info.txt
     echo ""
-    
-    if [ -n "$temp_pass" ]; then
-        print_info "临时密码: ${temp_pass}"
-    else
-        print_warning "未能获取临时密码，请查看日志："
-        echo "  journalctl -u qbittorrent-nox -n 50 | grep password"
-    fi
+    print_info "信息已保存到: /root/media-server-info.txt"
     
     press_enter
 }
@@ -3964,8 +4024,8 @@ show_webapp_menu() {
     echo "6. 📁 Copyparty (文件服务器)"
     echo "   需要: Nginx/OpenResty + Python3 + Supervisor"
     echo ""
-    echo "7. 📥 qBittorrent-nox (BT 下载)"
-    echo "   需要: Nginx/OpenResty + qbittorrent-nox"
+    echo "7. 📥🎬 qBittorrent + Jellyfin (媒体中心)"
+    echo "   需要: Nginx/OpenResty + qbittorrent-nox + Jellyfin"
     echo ""
     echo "【站点管理】"
     echo ""
@@ -4012,7 +4072,7 @@ webapp_menu() {
                 install_copyparty
                 ;;
             7)
-                install_qbittorrent
+                install_qb_jellyfin
                 ;;
             8)
                 list_sites
