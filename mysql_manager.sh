@@ -520,6 +520,54 @@ restart_db() {
 }
 
 #==========================================================
+# 函数：检测 root@localhost 认证方式
+#==========================================================
+detect_root_auth() {
+    local auth_info
+    
+    # 尝试获取 root@localhost 的认证信息
+    if auth_info=$(mysql -u root -N -e "SELECT plugin FROM mysql.user WHERE user='root' AND host='localhost';" 2>/dev/null); then
+        echo "$auth_info"
+    else
+        # 如果无法连接，返回未知
+        echo "unknown"
+    fi
+}
+
+#==========================================================
+# 函数：显示 root@localhost 认证状态
+#==========================================================
+show_root_auth_status() {
+    local auth_method
+    auth_method=$(detect_root_auth)
+    
+    echo -e "${CYAN}root@localhost 认证方式:${NC}"
+    
+    case "$auth_method" in
+        *unix_socket*)
+            if echo "$auth_method" | grep -q "mysql_native_password"; then
+                echo -e "  ${GREEN}• 双重认证${NC} (Unix Socket 或 密码)"
+                echo -e "  ${YELLOW}提示: 可以通过 sudo 无密码访问，也可以使用密码${NC}"
+            else
+                echo -e "  ${GREEN}• Unix Socket${NC} (无需密码)"
+                echo -e "  ${YELLOW}提示: 只能通过 sudo 访问，无法使用密码${NC}"
+            fi
+            ;;
+        mysql_native_password)
+            echo -e "  ${GREEN}• 密码认证${NC}"
+            echo -e "  ${YELLOW}提示: 需要密码才能访问${NC}"
+            ;;
+        unknown)
+            echo -e "  ${RED}• 未知${NC} (无法连接数据库)"
+            ;;
+        *)
+            echo -e "  ${YELLOW}• $auth_method${NC}"
+            ;;
+    esac
+    echo ""
+}
+
+#==========================================================
 # 函数：保存用户密码到文件
 #==========================================================
 save_user_password() {
@@ -599,20 +647,34 @@ setup_remote_access() {
 change_root_password() {
     local new_password="$1"
     
-    echo -e "${YELLOW}正在修改 root 密码...${NC}"
+    echo -e "${YELLOW}正在修改 root 远程访问密码...${NC}"
     
-    # 获取所有 root 账户
-    local root_accounts
-    if root_accounts=$(mysql -u"${ROOT_USER}" -N -e "SELECT DISTINCT host FROM mysql.user WHERE user='root';" 2>/dev/null); then
-        echo -e "${CYAN}检测到以下 root 账户:${NC}"
-        echo "$root_accounts" | sed 's/^/  root@/'
-        echo ""
-    else
-        # 如果无法获取，默认只更新 localhost
-        root_accounts="localhost"
+    # 读取保存的远程 IP 段
+    local remote_host_file="$HOME/.mysql_remote_host"
+    local remote_hosts=""
+    
+    if [ -f "$remote_host_file" ]; then
+        remote_hosts=$(cat "$remote_host_file" 2>/dev/null)
+        echo -e "${CYAN}检测到配置的远程 IP 段: $remote_hosts${NC}"
     fi
     
-    # 更新所有 root 账户的密码
+    # 如果没有配置，查找非 localhost 的 root 账户
+    if [ -z "$remote_hosts" ]; then
+        if remote_hosts=$(mysql -u"${ROOT_USER}" -N -e "SELECT DISTINCT host FROM mysql.user WHERE user='root' AND host != 'localhost';" 2>/dev/null); then
+            if [ -n "$remote_hosts" ]; then
+                echo -e "${CYAN}检测到以下远程 root 账户:${NC}"
+                echo "$remote_hosts" | sed 's/^/  root@/'
+            else
+                echo -e "${YELLOW}未检测到远程 root 账户，请先使用菜单 1 配置远程访问${NC}"
+                return 1
+            fi
+        else
+            echo -e "${YELLOW}无法连接数据库，请检查 localhost 密码${NC}"
+            return 1
+        fi
+    fi
+    
+    # 更新所有远程 root 账户的密码
     local success_count=0
     local total_count=0
     
@@ -625,20 +687,19 @@ change_root_password() {
         if echo "$sql" | mysql -u"${ROOT_USER}" 2>/dev/null; then
             echo -e "${GREEN}✓ root@${host} 密码已更新${NC}"
             success_count=$((success_count + 1))
+            # 保存密码
+            save_user_password "root" "$host" "$new_password"
         else
             echo -e "${YELLOW}⚠ root@${host} 密码更新失败${NC}"
         fi
-    done <<< "$root_accounts"
+    done <<< "$remote_hosts"
     
     if [ $success_count -gt 0 ]; then
-        echo -e "${GREEN}✓ 成功更新 ${success_count}/${total_count} 个 root 账户${NC}"
-        
-        # 保存密码到密码文件
-        save_user_password "root" "*" "$new_password"
-        
+        echo -e "${GREEN}✓ 成功更新 ${success_count}/${total_count} 个远程 root 账户${NC}"
+        echo -e "${CYAN}注意: localhost 密码未修改${NC}"
         return 0
     else
-        echo -e "${RED}✗ 所有 root 账户密码更新失败${NC}"
+        echo -e "${RED}✗ 所有远程 root 账户密码更新失败${NC}"
         return 1
     fi
 }
@@ -689,43 +750,44 @@ force_reset_root_password() {
         return 1
     fi
     
-    # 3. 重置密码（同步所有 root 账户）
-    echo -e "${YELLOW}3. 重置密码...${NC}"
+    # 3. 重置密码（同步所有远程 root 账户）
+    echo -e "${YELLOW}3. 重置远程 root 密码...${NC}"
     
-    # 获取所有 root 账户
-    local root_hosts="localhost"
-    local other_hosts
-    if other_hosts=$(mysql -u root -N -e "SELECT DISTINCT host FROM mysql.user WHERE user='root' AND host != 'localhost';" 2>/dev/null); then
-        if [ -n "$other_hosts" ]; then
-            root_hosts="$root_hosts
-$other_hosts"
+    # 读取保存的远程 IP 段
+    local remote_host_file="$HOME/.mysql_remote_host"
+    local remote_hosts=""
+    
+    if [ -f "$remote_host_file" ]; then
+        remote_hosts=$(cat "$remote_host_file" 2>/dev/null)
+    fi
+    
+    # 如果没有配置，查找非 localhost 的 root 账户
+    if [ -z "$remote_hosts" ]; then
+        if remote_hosts=$(mysql -u root -N -e "SELECT DISTINCT host FROM mysql.user WHERE user='root' AND host != 'localhost';" 2>/dev/null); then
+            if [ -z "$remote_hosts" ]; then
+                echo -e "${YELLOW}未检测到远程 root 账户，跳过远程密码重置${NC}"
+                remote_hosts=""
+            fi
         fi
     fi
     
-    local reset_success=true
-    while IFS= read -r host; do
-        [ -z "$host" ] && continue
-        
-        local reset_sql="FLUSH PRIVILEGES; ALTER USER 'root'@'${host}' IDENTIFIED BY '${new_password}'; FLUSH PRIVILEGES; FLUSH TABLES;"
-        
-        if echo "$reset_sql" | mysql -u root 2>/dev/null; then
-            echo -e "${GREEN}✓ root@${host} 密码重置成功${NC}"
-        else
-            echo -e "${YELLOW}⚠ root@${host} 密码重置失败${NC}"
-            reset_success=false
-        fi
-    done <<< "$root_hosts"
-    
-    if [ "$reset_success" = false ]; then
-        echo -e "${RED}✗ 部分密码重置失败${NC}"
-        sudo pkill mysqld 2>/dev/null
-        sudo pkill mariadbd 2>/dev/null
-        sudo systemctl start "${MYSQL_SERVICE}" 2>/dev/null
-        return 1
+    # 更新远程 root 账户
+    if [ -n "$remote_hosts" ]; then
+        while IFS= read -r host; do
+            [ -z "$host" ] && continue
+            
+            local reset_sql="FLUSH PRIVILEGES; ALTER USER 'root'@'${host}' IDENTIFIED BY '${new_password}'; FLUSH PRIVILEGES; FLUSH TABLES;"
+            
+            if echo "$reset_sql" | mysql -u root 2>/dev/null; then
+                echo -e "${GREEN}✓ root@${host} 密码重置成功${NC}"
+                save_user_password "root" "$host" "$new_password"
+            else
+                echo -e "${YELLOW}⚠ root@${host} 密码重置失败${NC}"
+            fi
+        done <<< "$remote_hosts"
     fi
     
-    # 保存密码
-    save_user_password "root" "*" "$new_password"
+    echo -e "${CYAN}注意: localhost 密码未修改${NC}"
     
     # 4. 优雅地停止临时 MySQL 进程
     echo -e "${YELLOW}4. 停止临时 MySQL 进程...${NC}"
@@ -1127,6 +1189,11 @@ menu_configure_binding() {
         if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
             restart_db
             setup_remote_access "$ROOT_PASSWORD" "$REMOTE_HOST"
+            
+            # 保存远程 IP 段和密码
+            echo "$REMOTE_HOST" > "$HOME/.mysql_remote_host"
+            chmod 600 "$HOME/.mysql_remote_host"
+            save_user_password "root" "$REMOTE_HOST" "$ROOT_PASSWORD"
             
             echo -e "\n${GREEN}============================================${NC}"
             echo -e "${GREEN}  配置完成！${NC}"
@@ -1788,9 +1855,12 @@ show_main_menu() {
     clear
     echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
     echo -e "${GREEN}║                                                            ║${NC}"
-    echo -e "${GREEN}║        MySQL/MariaDB 远程访问管理脚本                      ║${NC}"
+    echo -e "${GREEN}║${NC}        ${CYAN}MySQL/MariaDB 管理脚本${NC}                         ${GREEN}║${NC}"
     echo -e "${GREEN}║                                                            ║${NC}"
     echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}\n"
+    
+    # 显示 root@localhost 认证状态
+    show_root_auth_status
     
     echo -e "${CYAN}请选择操作:${NC}\n"
     echo "  1) 配置数据库绑定地址（本地/远程模式）"
