@@ -592,9 +592,9 @@ force_reset_root_password() {
     
     sleep 2
     
-    # 2. 以 skip-grant-tables 模式启动
+    # 2. 以 skip-grant-tables 模式启动（使用 mysqld 而不是 mysqld_safe）
     echo -e "${YELLOW}2. 以跳过权限模式启动 MySQL...${NC}"
-    sudo mysqld_safe --skip-grant-tables --skip-networking &
+    sudo mysqld --skip-grant-tables --skip-networking --user=mysql &
     local mysqld_pid=$!
     
     # 等待 MySQL 启动
@@ -612,41 +612,47 @@ force_reset_root_password() {
     
     if [ $waited -ge $max_wait ]; then
         echo -e "${RED}✗ MySQL 启动超时${NC}"
-        sudo pkill -9 mysqld 2>/dev/null
+        sudo pkill mysqld 2>/dev/null
+        sudo pkill mariadbd 2>/dev/null
         sudo systemctl start "${MYSQL_SERVICE}" 2>/dev/null
         return 1
     fi
     
     # 3. 重置密码
     echo -e "${YELLOW}3. 重置密码...${NC}"
-    local reset_sql="
-    FLUSH PRIVILEGES;
-    ALTER USER '${ROOT_USER}'@'localhost' IDENTIFIED BY '${new_password}';
-    FLUSH PRIVILEGES;
-    "
+    local reset_sql="FLUSH PRIVILEGES; ALTER USER '${ROOT_USER}'@'localhost' IDENTIFIED BY '${new_password}'; FLUSH PRIVILEGES; FLUSH TABLES;"
     
     if echo "$reset_sql" | mysql -u root 2>/dev/null; then
         echo -e "${GREEN}✓ 密码重置成功${NC}"
     else
         echo -e "${RED}✗ 密码重置失败${NC}"
-        sudo pkill -9 mysqld 2>/dev/null
+        sudo pkill mysqld 2>/dev/null
+        sudo pkill mariadbd 2>/dev/null
         sudo systemctl start "${MYSQL_SERVICE}" 2>/dev/null
         return 1
     fi
     
-    # 4. 停止 skip-grant-tables 模式的 MySQL
+    # 4. 优雅地停止临时 MySQL 进程
     echo -e "${YELLOW}4. 停止临时 MySQL 进程...${NC}"
     sudo pkill mysqld 2>/dev/null
-    sleep 2
+    sudo pkill mariadbd 2>/dev/null
+    sleep 3
     
     # 5. 正常启动 MySQL
     echo -e "${YELLOW}5. 正常启动 MySQL 服务...${NC}"
     if sudo systemctl start "${MYSQL_SERVICE}" 2>/dev/null; then
-        echo -e "${GREEN}✓ MySQL 服务已正常启动${NC}"
-        sleep 2
-        return 0
+        sleep 3
+        if systemctl is-active --quiet "${MYSQL_SERVICE}"; then
+            echo -e "${GREEN}✓ MySQL 服务已正常启动${NC}"
+            return 0
+        else
+            echo -e "${RED}✗ MySQL 服务启动后立即停止${NC}"
+            echo -e "${YELLOW}尝试查看日志: sudo journalctl -xeu ${MYSQL_SERVICE}${NC}"
+            return 1
+        fi
     else
         echo -e "${RED}✗ 启动 MySQL 服务失败${NC}"
+        echo -e "${YELLOW}尝试查看日志: sudo journalctl -xeu ${MYSQL_SERVICE}${NC}"
         return 1
     fi
 }
