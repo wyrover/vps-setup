@@ -1530,6 +1530,131 @@ menu_import_sql() {
 }
 
 #==========================================================
+# 菜单：测试 root 用户连接
+#==========================================================
+menu_test_root_connection() {
+    echo -e "\n${GREEN}============================================${NC}"
+    echo -e "${GREEN}  测试 root 用户连接${NC}"
+    echo -e "${GREEN}============================================${NC}\n"
+    
+    # 尝试加载保存的密码
+    local password_file="$HOME/.mysql_root_password"
+    local root_password=""
+    
+    if [ -f "$password_file" ] && [ -r "$password_file" ]; then
+        root_password=$(cat "$password_file" 2>/dev/null | head -n 1)
+        if [ -n "$root_password" ]; then
+            echo -e "${GREEN}✓ 已加载保存的 root 密码${NC}"
+        fi
+    fi
+    
+    # 如果没有保存的密码，询问用户
+    if [ -z "$root_password" ]; then
+        read_password_simple "请输入 root 密码" "root_password"
+    fi
+    
+    # 设置密码环境变量
+    if [ -n "$root_password" ]; then
+        export MYSQL_PWD="$root_password"
+    else
+        unset MYSQL_PWD 2>/dev/null || true
+    fi
+    
+    echo -e "\n${YELLOW}正在测试连接...${NC}"
+    
+    # 测试连接
+    local test_output
+    if test_output=$(mysql -u root -e "SELECT VERSION(), CURRENT_USER(), DATABASE();" 2>&1); then
+        echo -e "${GREEN}✓ 连接成功！${NC}\n"
+        echo -e "${CYAN}数据库信息:${NC}"
+        echo "$test_output"
+        
+        # 显示当前用户权限
+        echo -e "\n${CYAN}当前用户权限:${NC}"
+        mysql -u root -e "SHOW GRANTS FOR CURRENT_USER();" 2>/dev/null || echo "无法获取权限信息"
+        
+        # 显示数据库列表
+        echo -e "\n${CYAN}数据库列表:${NC}"
+        mysql -u root -e "SHOW DATABASES;" 2>/dev/null || echo "无法获取数据库列表"
+    else
+        echo -e "${RED}✗ 连接失败！${NC}\n"
+        echo -e "${YELLOW}错误信息:${NC}"
+        echo "$test_output"
+        
+        if echo "$test_output" | grep -qi "access denied"; then
+            echo -e "\n${YELLOW}提示: 密码可能不正确，请使用菜单 2 重置密码${NC}"
+        fi
+    fi
+    
+    unset MYSQL_PWD 2>/dev/null || true
+}
+
+#==========================================================
+# 菜单：列出所有数据库用户
+#==========================================================
+menu_list_database_users() {
+    echo -e "\n${GREEN}============================================${NC}"
+    echo -e "${GREEN}  数据库用户列表${NC}"
+    echo -e "${GREEN}============================================${NC}\n"
+    
+    # 尝试加载保存的密码
+    local password_file="$HOME/.mysql_root_password"
+    local root_password=""
+    
+    if [ -f "$password_file" ] && [ -r "$password_file" ]; then
+        root_password=$(cat "$password_file" 2>/dev/null | head -n 1)
+        if [ -n "$root_password" ]; then
+            echo -e "${GREEN}✓ 已加载保存的 root 密码${NC}"
+        fi
+    fi
+    
+    # 如果没有保存的密码，询问用户
+    if [ -z "$root_password" ]; then
+        read_password_simple "请输入 root 密码" "root_password"
+    fi
+    
+    # 设置密码环境变量
+    if [ -n "$root_password" ]; then
+        export MYSQL_PWD="$root_password"
+    else
+        unset MYSQL_PWD 2>/dev/null || true
+    fi
+    
+    echo -e "\n${YELLOW}正在获取用户列表...${NC}\n"
+    
+    # 获取所有用户
+    local users_output
+    if users_output=$(mysql -u root -N -e "SELECT DISTINCT user, host FROM mysql.user WHERE user != '' ORDER BY user, host;" 2>&1); then
+        echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║                    数据库用户列表                          ║${NC}"
+        echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}\n"
+        
+        # 遍历每个用户
+        while IFS=$'\t' read -r username hostname; do
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${YELLOW}用户: ${username}@${hostname}${NC}"
+            echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            
+            # 显示该用户的权限
+            echo -e "${CYAN}权限:${NC}"
+            mysql -u root -e "SHOW GRANTS FOR '${username}'@'${hostname}';" 2>/dev/null | tail -n +2 || echo "  无法获取权限"
+            echo ""
+        done <<< "$users_output"
+        
+        # 统计用户数量
+        local user_count
+        user_count=$(echo "$users_output" | wc -l)
+        echo -e "${GREEN}总共 ${user_count} 个用户${NC}\n"
+    else
+        echo -e "${RED}✗ 获取用户列表失败！${NC}\n"
+        echo -e "${YELLOW}错误信息:${NC}"
+        echo "$users_output"
+    fi
+    
+    unset MYSQL_PWD 2>/dev/null || true
+}
+
+#==========================================================
 # 主菜单
 #==========================================================
 show_main_menu() {
@@ -1544,8 +1669,10 @@ show_main_menu() {
     echo "  1) 配置数据库绑定地址（本地/远程模式）"
     echo "  2) 修改本地 root 密码"
     echo "  3) 下载并导入 SQL 文件（支持 Basic Auth）"
-    echo "  4) 查看数据库监听状态"
-    echo "  5) 退出"
+    echo "  4) 测试 root 用户连接"
+    echo "  5) 列出所有数据库用户"
+    echo "  6) 查看数据库监听状态"
+    echo "  7) 退出"
     echo
 }
 
@@ -1561,7 +1688,7 @@ main() {
     
     while true; do
         show_main_menu
-        read -p "请输入选项 [1-5]: " choice
+        read -p "请输入选项 [1-7]: " choice
         
         case "$choice" in
             1)
@@ -1577,10 +1704,18 @@ main() {
                 read -p "按 Enter 键返回主菜单..."
                 ;;
             4)
-                show_status
+                menu_test_root_connection
                 read -p "按 Enter 键返回主菜单..."
                 ;;
             5)
+                menu_list_database_users
+                read -p "按 Enter 键返回主菜单..."
+                ;;
+            6)
+                show_status
+                read -p "按 Enter 键返回主菜单..."
+                ;;
+            7)
                 echo -e "\n${GREEN}感谢使用，再见！${NC}\n"
                 exit 0
                 ;;
