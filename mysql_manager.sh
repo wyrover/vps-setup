@@ -1212,7 +1212,18 @@ menu_import_sql() {
     # 10. 执行还原操作
     # ============================================
     export MYSQL_PWD="$db_password"
-    local mysql_cmd="mysql -h${db_host} -P${db_port} -u${db_user}"
+    local mysql_cmd="mysql -h${db_host} -P${db_port} -u${db_user} --connect-timeout=10"
+    
+    # 调试信息
+    echo -e "${CYAN}[调试] 数据库连接信息:${NC}"
+    echo -e "${CYAN}  主机: ${db_host}${NC}"
+    echo -e "${CYAN}  端口: ${db_port}${NC}"
+    echo -e "${CYAN}  用户: ${db_user}${NC}"
+    if [ -n "$db_password" ]; then
+        echo -e "${CYAN}  密码: 已设置 (${#db_password} 位)${NC}"
+    else
+        echo -e "${YELLOW}  密码: 未设置${NC}"
+    fi
     
     # 删除数据库 (允许失败，但捕获输出以备调试)
     echo -e "\n${YELLOW}正在删除数据库 ${target_db}...${NC}"
@@ -1251,8 +1262,19 @@ menu_import_sql() {
     echo -e "${CYAN}[调试] 准备执行 CREATE DATABASE 命令...${NC}"
     local create_output
     echo -e "${CYAN}[调试] 开始执行 mysql 命令...${NC}"
-    create_output=$($mysql_cmd -e "CREATE DATABASE IF NOT EXISTS \`${target_db}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>&1)
-    local create_exit_code=$?
+    
+    # 使用 timeout 防止无限期等待，并确保 MYSQL_PWD 被传递
+    if command -v timeout >/dev/null 2>&1; then
+        create_output=$(timeout 30 bash -c "MYSQL_PWD='$db_password' $mysql_cmd -e \"CREATE DATABASE IF NOT EXISTS \\\`${target_db}\\\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\"" 2>&1)
+        local create_exit_code=$?
+        if [ $create_exit_code -eq 124 ]; then
+            echo -e "${RED}[调试] 命令超时（30秒）${NC}"
+        fi
+    else
+        # 没有 timeout 命令，直接执行
+        create_output=$(MYSQL_PWD="$db_password" $mysql_cmd -e "CREATE DATABASE IF NOT EXISTS \`${target_db}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>&1)
+        local create_exit_code=$?
+    fi
     echo -e "${CYAN}[调试] 命令执行完成，退出码: ${create_exit_code}${NC}"
     
     if [ $create_exit_code -eq 0 ]; then
