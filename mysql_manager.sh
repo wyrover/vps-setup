@@ -1237,10 +1237,12 @@ menu_import_sql() {
     
     # 创建数据库
     echo -e "${YELLOW}正在创建数据库 ${target_db}...${NC}"
-    if $mysql_cmd -e "CREATE DATABASE IF NOT EXISTS \`${target_db}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>/dev/null; then
+    local create_output
+    if create_output=$($mysql_cmd -e "CREATE DATABASE IF NOT EXISTS \`${target_db}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>&1); then
         echo -e "${GREEN}✓ 数据库已创建${NC}"
     else
         echo -e "${RED}✗ 创建数据库失败${NC}"
+        echo -e "${YELLOW}错误详情: ${create_output}${NC}"
         unset MYSQL_PWD
         return
     fi
