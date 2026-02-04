@@ -520,6 +520,51 @@ restart_db() {
 }
 
 #==========================================================
+# 函数：保存用户密码到文件
+#==========================================================
+save_user_password() {
+    local username="$1"
+    local hostname="$2"
+    local password="$3"
+    local password_db="$HOME/.mysql_passwords.txt"
+    
+    # 创建或更新密码文件
+    touch "$password_db"
+    chmod 600 "$password_db"
+    
+    # 删除旧记录（如果存在）
+    sed -i "/^${username}@${hostname}:/d" "$password_db" 2>/dev/null || true
+    
+    # 添加新记录
+    echo "${username}@${hostname}:${password}" >> "$password_db"
+}
+
+#==========================================================
+# 函数：获取用户密码
+#==========================================================
+get_user_password() {
+    local username="$1"
+    local hostname="$2"
+    local password_db="$HOME/.mysql_passwords.txt"
+    
+    if [ ! -f "$password_db" ]; then
+        echo ""
+        return 1
+    fi
+    
+    # 查找匹配的记录
+    local password
+    password=$(grep "^${username}@${hostname}:" "$password_db" 2>/dev/null | cut -d':' -f2-)
+    
+    if [ -z "$password" ] && [ "$hostname" = "*" ]; then
+        # 如果没有找到通配符，尝试找第一个匹配的用户名
+        password=$(grep "^${username}@" "$password_db" 2>/dev/null | head -n 1 | cut -d':' -f2-)
+    fi
+    
+    echo "$password"
+}
+
+#==========================================================
 # 函数：配置远程访问
 #==========================================================
 setup_remote_access() {
@@ -549,25 +594,51 @@ setup_remote_access() {
 }
 
 #==========================================================
-# 函数：修改 root 密码
+# 函数：修改 root 密码（同步所有 root 账户）
 #==========================================================
 change_root_password() {
     local new_password="$1"
     
-    echo -e "${YELLOW}正在修改本地 root 密码...${NC}"
+    echo -e "${YELLOW}正在修改 root 密码...${NC}"
     
-    # 创建 SQL 语句
-    local sql="
-    ALTER USER '${ROOT_USER}'@'localhost' IDENTIFIED BY '${new_password}';
-    FLUSH PRIVILEGES;
-    "
+    # 获取所有 root 账户
+    local root_accounts
+    if root_accounts=$(mysql -u"${ROOT_USER}" -N -e "SELECT DISTINCT host FROM mysql.user WHERE user='root';" 2>/dev/null); then
+        echo -e "${CYAN}检测到以下 root 账户:${NC}"
+        echo "$root_accounts" | sed 's/^/  root@/'
+        echo ""
+    else
+        # 如果无法获取，默认只更新 localhost
+        root_accounts="localhost"
+    fi
     
-    # 执行 SQL
-    if echo "$sql" | mysql -u"${ROOT_USER}" 2>/dev/null; then
-        echo -e "${GREEN}✓ 本地 root 密码修改成功${NC}"
+    # 更新所有 root 账户的密码
+    local success_count=0
+    local total_count=0
+    
+    while IFS= read -r host; do
+        [ -z "$host" ] && continue
+        total_count=$((total_count + 1))
+        
+        local sql="ALTER USER 'root'@'${host}' IDENTIFIED BY '${new_password}'; FLUSH PRIVILEGES;"
+        
+        if echo "$sql" | mysql -u"${ROOT_USER}" 2>/dev/null; then
+            echo -e "${GREEN}✓ root@${host} 密码已更新${NC}"
+            success_count=$((success_count + 1))
+        else
+            echo -e "${YELLOW}⚠ root@${host} 密码更新失败${NC}"
+        fi
+    done <<< "$root_accounts"
+    
+    if [ $success_count -gt 0 ]; then
+        echo -e "${GREEN}✓ 成功更新 ${success_count}/${total_count} 个 root 账户${NC}"
+        
+        # 保存密码到密码文件
+        save_user_password "root" "*" "$new_password"
+        
         return 0
     else
-        echo -e "${RED}✗ 密码修改失败${NC}"
+        echo -e "${RED}✗ 所有 root 账户密码更新失败${NC}"
         return 1
     fi
 }
@@ -618,19 +689,43 @@ force_reset_root_password() {
         return 1
     fi
     
-    # 3. 重置密码
+    # 3. 重置密码（同步所有 root 账户）
     echo -e "${YELLOW}3. 重置密码...${NC}"
-    local reset_sql="FLUSH PRIVILEGES; ALTER USER '${ROOT_USER}'@'localhost' IDENTIFIED BY '${new_password}'; FLUSH PRIVILEGES; FLUSH TABLES;"
     
-    if echo "$reset_sql" | mysql -u root 2>/dev/null; then
-        echo -e "${GREEN}✓ 密码重置成功${NC}"
-    else
-        echo -e "${RED}✗ 密码重置失败${NC}"
+    # 获取所有 root 账户
+    local root_hosts="localhost"
+    local other_hosts
+    if other_hosts=$(mysql -u root -N -e "SELECT DISTINCT host FROM mysql.user WHERE user='root' AND host != 'localhost';" 2>/dev/null); then
+        if [ -n "$other_hosts" ]; then
+            root_hosts="$root_hosts
+$other_hosts"
+        fi
+    fi
+    
+    local reset_success=true
+    while IFS= read -r host; do
+        [ -z "$host" ] && continue
+        
+        local reset_sql="FLUSH PRIVILEGES; ALTER USER 'root'@'${host}' IDENTIFIED BY '${new_password}'; FLUSH PRIVILEGES; FLUSH TABLES;"
+        
+        if echo "$reset_sql" | mysql -u root 2>/dev/null; then
+            echo -e "${GREEN}✓ root@${host} 密码重置成功${NC}"
+        else
+            echo -e "${YELLOW}⚠ root@${host} 密码重置失败${NC}"
+            reset_success=false
+        fi
+    done <<< "$root_hosts"
+    
+    if [ "$reset_success" = false ]; then
+        echo -e "${RED}✗ 部分密码重置失败${NC}"
         sudo pkill mysqld 2>/dev/null
         sudo pkill mariadbd 2>/dev/null
         sudo systemctl start "${MYSQL_SERVICE}" 2>/dev/null
         return 1
     fi
+    
+    # 保存密码
+    save_user_password "root" "*" "$new_password"
     
     # 4. 优雅地停止临时 MySQL 进程
     echo -e "${YELLOW}4. 停止临时 MySQL 进程...${NC}"
@@ -1468,6 +1563,8 @@ menu_import_sql() {
         
         if $mysql_cmd -e "$sql_user_op" 2>/dev/null; then
             echo -e "${GREEN}✓ 用户创建成功${NC}"
+            # 保存密码
+            save_user_password "$new_db_user" "$user_host" "$new_db_pass"
         else
             echo -e "${RED}✗ 用户创建失败${NC}"
         fi
@@ -1597,6 +1694,11 @@ menu_list_database_users() {
     echo -e "${GREEN}  数据库用户列表${NC}"
     echo -e "${GREEN}============================================${NC}\n"
     
+    echo -e "${YELLOW}说明:${NC}"
+    echo -e "${CYAN}• 密码以哈希形式存储，无法显示明文${NC}"
+    echo -e "${CYAN}• 'user'@'host' 是独立账户，可以有不同密码${NC}"
+    echo -e "${CYAN}• 例如: root@localhost 和 root@10.0.0.% 是两个不同的账户${NC}\n"
+    
     # 尝试加载保存的密码
     local password_file="$HOME/.mysql_root_password"
     local root_password=""
@@ -1622,9 +1724,15 @@ menu_list_database_users() {
     
     echo -e "\n${YELLOW}正在获取用户列表...${NC}\n"
     
+    # 使用 mariadb 命令（如果可用），否则使用 mysql
+    local mysql_client="mysql"
+    if command -v mariadb >/dev/null 2>&1; then
+        mysql_client="mariadb"
+    fi
+    
     # 获取所有用户
     local users_output
-    if users_output=$(mysql -u root -N -e "SELECT DISTINCT user, host FROM mysql.user WHERE user != '' ORDER BY user, host;" 2>&1); then
+    if users_output=$($mysql_client -u root -N -e "SELECT DISTINCT user, host FROM mysql.user WHERE user != '' ORDER BY user, host;" 2>&1); then
         echo -e "${GREEN}╔════════════════════════════════════════════════════════════╗${NC}"
         echo -e "${GREEN}║                    数据库用户列表                          ║${NC}"
         echo -e "${GREEN}╚════════════════════════════════════════════════════════════╝${NC}\n"
@@ -1635,9 +1743,24 @@ menu_list_database_users() {
             echo -e "${YELLOW}用户: ${username}@${hostname}${NC}"
             echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             
-            # 显示该用户的权限
+            # 显示该用户的权限和密码
             echo -e "${CYAN}权限:${NC}"
-            mysql -u root -e "SHOW GRANTS FOR '${username}'@'${hostname}';" 2>/dev/null | tail -n +2 || echo "  无法获取权限"
+            local grants_output
+            if grants_output=$($mysql_client -u root -e "SHOW GRANTS FOR '${username}'@'${hostname}';" 2>&1 | tail -n +2); then
+                # 过滤掉弃用警告
+                echo "$grants_output" | grep -v "Deprecated program name" | sed 's/^/  /'
+            else
+                echo "  无法获取权限"
+            fi
+            
+            # 尝试获取并显示明文密码
+            local saved_password
+            saved_password=$(get_user_password "$username" "$hostname")
+            if [ -n "$saved_password" ]; then
+                echo -e "${YELLOW}明文密码: ${saved_password}${NC}"
+            else
+                echo -e "${YELLOW}明文密码: 未保存${NC}"
+            fi
             echo ""
         done <<< "$users_output"
         
@@ -1645,10 +1768,14 @@ menu_list_database_users() {
         local user_count
         user_count=$(echo "$users_output" | wc -l)
         echo -e "${GREEN}总共 ${user_count} 个用户${NC}\n"
+        
+        echo -e "${YELLOW}提示:${NC}"
+        echo -e "${CYAN}• PASSWORD '*...' 是密码的哈希值，不是明文密码${NC}"
+        echo -e "${CYAN}• 如需修改密码，请使用菜单 2 或在导入时创建新用户${NC}\n"
     else
         echo -e "${RED}✗ 获取用户列表失败！${NC}\n"
         echo -e "${YELLOW}错误信息:${NC}"
-        echo "$users_output"
+        echo "$users_output" | grep -v "Deprecated program name"
     fi
     
     unset MYSQL_PWD 2>/dev/null || true
