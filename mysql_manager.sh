@@ -606,7 +606,7 @@ download_sql_file() {
 }
 
 #==========================================================
-# 函数：解压文件
+# 函数：解压文件（使用最可靠的方法）
 #==========================================================
 decompress_file() {
     local file="$1"
@@ -623,97 +623,80 @@ decompress_file() {
     # 检查文件大小
     local file_size
     file_size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)
-    echo -e "${CYAN}文件大小: $((file_size / 1024)) KB${NC}"
+    echo -e "${CYAN}压缩文件大小: $((file_size / 1024)) KB${NC}"
+    
+    # 删除已存在的输出文件
+    if [ -f "$output_file" ]; then
+        echo -e "${YELLOW}删除已存在的目标文件: $output_file${NC}"
+        rm -f "$output_file"
+    fi
     
     case "$file" in
         *.bz2)
             echo -e "${CYAN}检测到 bzip2 压缩格式${NC}"
             
-            # 检查 bunzip2 是否可用
-            if ! command -v bunzip2 &> /dev/null; then
-                echo -e "${RED}✗ bunzip2 命令不可用${NC}"
+            # 检查 bzcat 是否可用
+            if ! command -v bzcat &> /dev/null; then
+                echo -e "${RED}✗ bzcat 命令不可用${NC}"
                 return 1
             fi
             
-            # 如果目标文件已存在，先删除
-            if [ -f "$output_file" ]; then
-                echo -e "${YELLOW}目标文件已存在，将被覆盖${NC}"
-                rm -f "$output_file"
-            fi
-            
-            # 尝试解压
+            # 使用 bzcat 解压（最可靠的方法）
             echo -e "${YELLOW}正在解压...${NC}"
-            
-            # 方法1：使用 bunzip2 -k (保留原文件)
-            if bunzip2 -k "$file" 2>&1; then
-                if [ -f "$output_file" ]; then
-                    echo -e "${GREEN}✓ 解压成功: $output_file${NC}"
-                    echo "$output_file"
-                    return 0
-                fi
-            fi
-            
-            # 如果方法1失败，尝试方法2：使用管道
-            echo -e "${YELLOW}尝试备用解压方法...${NC}"
             if bzcat "$file" > "$output_file" 2>/dev/null; then
                 if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+                    local output_size
+                    output_size=$(stat -c%s "$output_file" 2>/dev/null || stat -f%z "$output_file" 2>/dev/null)
                     echo -e "${GREEN}✓ 解压成功: $output_file${NC}"
+                    echo -e "${GREEN}  解压后大小: $((output_size / 1024 / 1024)) MB${NC}"
                     echo "$output_file"
                     return 0
+                else
+                    echo -e "${RED}✗ 解压后文件为空或不存在${NC}"
+                    rm -f "$output_file"
+                    return 1
                 fi
-            fi
-            
-            # 如果都失败了
-            echo -e "${RED}✗ bunzip2 解压失败${NC}"
-            
-            # 尝试检查文件是否损坏
-            echo -e "${YELLOW}正在检查文件完整性...${NC}"
-            if bunzip2 -t "$file" 2>&1 | tee /tmp/bzip2_test.log | grep -qi "bad\|error\|corrupt"; then
-                echo -e "${RED}✗ 文件可能已损坏，请重新下载${NC}"
-                cat /tmp/bzip2_test.log
             else
-                echo -e "${YELLOW}文件测试通过，但解压失败${NC}"
+                echo -e "${RED}✗ bzcat 解压失败${NC}"
+                
+                # 测试文件完整性
+                echo -e "${YELLOW}正在测试文件完整性...${NC}"
+                if bunzip2 -t "$file" 2>&1 | tee /tmp/bzip2_test.log; then
+                    echo -e "${GREEN}文件完整性测试通过${NC}"
+                else
+                    echo -e "${RED}✗ 文件可能已损坏${NC}"
+                    cat /tmp/bzip2_test.log
+                fi
+                
+                return 1
             fi
-            
-            return 1
             ;;
         *.gz)
             echo -e "${CYAN}检测到 gzip 压缩格式${NC}"
             
-            if ! command -v gunzip &> /dev/null; then
-                echo -e "${RED}✗ gunzip 命令不可用${NC}"
+            if ! command -v zcat &> /dev/null; then
+                echo -e "${RED}✗ zcat 命令不可用${NC}"
                 return 1
             fi
             
-            # 如果目标文件已存在，先删除
-            if [ -f "$output_file" ]; then
-                echo -e "${YELLOW}目标文件已存在，将被覆盖${NC}"
-                rm -f "$output_file"
-            fi
-            
             echo -e "${YELLOW}正在解压...${NC}"
-            
-            # 方法1：使用 gunzip -k
-            if gunzip -k "$file" 2>&1; then
-                if [ -f "$output_file" ]; then
-                    echo -e "${GREEN}✓ 解压成功: $output_file${NC}"
-                    echo "$output_file"
-                    return 0
-                fi
-            fi
-            
-            # 方法2：使用管道
-            echo -e "${YELLOW}尝试备用解压方法...${NC}"
             if zcat "$file" > "$output_file" 2>/dev/null; then
                 if [ -f "$output_file" ] && [ -s "$output_file" ]; then
+                    local output_size
+                    output_size=$(stat -c%s "$output_file" 2>/dev/null || stat -f%z "$output_file" 2>/dev/null)
                     echo -e "${GREEN}✓ 解压成功: $output_file${NC}"
+                    echo -e "${GREEN}  解压后大小: $((output_size / 1024 / 1024)) MB${NC}"
                     echo "$output_file"
                     return 0
+                else
+                    echo -e "${RED}✗ 解压后文件为空或不存在${NC}"
+                    rm -f "$output_file"
+                    return 1
                 fi
+            else
+                echo -e "${RED}✗ zcat 解压失败${NC}"
+                return 1
             fi
-            
-            echo -e "${RED}✗ gunzip 解压失败${NC}"
-            return 1
             ;;
         *.zip)
             echo -e "${CYAN}检测到 zip 压缩格式${NC}"
@@ -727,16 +710,12 @@ decompress_file() {
             extract_dir=$(dirname "$file")
             
             echo -e "${YELLOW}正在解压...${NC}"
-            if unzip -o -q "$file" -d "$extract_dir" 2>&1; then
+            if unzip -o -q "$file" -d "$extract_dir" 2>/dev/null; then
                 echo -e "${GREEN}✓ 解压成功${NC}"
-                # 尝试找到 .sql 文件
-                local sql_file
-                sql_file=$(find "$extract_dir" -name "*.sql" -type f -newer "$file" 2>/dev/null | head -n 1)
                 
-                if [ -z "$sql_file" ]; then
-                    # 如果没找到比压缩文件新的，就找所有的
-                    sql_file=$(find "$extract_dir" -name "*.sql" -type f 2>/dev/null | head -n 1)
-                fi
+                # 查找 SQL 文件
+                local sql_file
+                sql_file=$(find "$extract_dir" -maxdepth 1 -name "*.sql" -type f 2>/dev/null | head -n 1)
                 
                 if [ -n "$sql_file" ] && [ -f "$sql_file" ]; then
                     echo -e "${CYAN}找到 SQL 文件: $sql_file${NC}"
@@ -758,10 +737,12 @@ decompress_file() {
             ;;
         *)
             echo -e "${RED}✗ 不支持的文件格式: $file${NC}"
+            echo -e "${YELLOW}支持的格式: .bz2, .gz, .zip, .sql${NC}"
             return 1
             ;;
     esac
 }
+
 
 #==========================================================
 # 函数：显示当前监听状态
