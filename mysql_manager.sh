@@ -525,8 +525,8 @@ restart_db() {
 detect_root_auth() {
     local auth_info
     
-    # 尝试获取 root@localhost 的认证信息
-    if auth_info=$(mysql -u root -N -e "SELECT plugin FROM mysql.user WHERE user='root' AND host='localhost';" 2>/dev/null); then
+    # 尝试使用 SHOW GRANTS 获取完整的认证信息
+    if auth_info=$(mysql -u root -e "SHOW GRANTS FOR 'root'@'localhost';" 2>/dev/null); then
         echo "$auth_info"
     else
         # 如果无法连接，返回未知
@@ -538,32 +538,43 @@ detect_root_auth() {
 # 函数：显示 root@localhost 认证状态
 #==========================================================
 show_root_auth_status() {
-    local auth_method
-    auth_method=$(detect_root_auth)
+    local auth_info
+    auth_info=$(detect_root_auth)
     
     echo -e "${CYAN}root@localhost 认证方式:${NC}"
     
-    case "$auth_method" in
-        *unix_socket*)
-            if echo "$auth_method" | grep -q "mysql_native_password"; then
-                echo -e "  ${GREEN}• 双重认证${NC} (Unix Socket 或 密码)"
-                echo -e "  ${YELLOW}提示: 可以通过 sudo 无密码访问，也可以使用密码${NC}"
-            else
-                echo -e "  ${GREEN}• Unix Socket${NC} (无需密码)"
-                echo -e "  ${YELLOW}提示: 只能通过 sudo 访问，无法使用密码${NC}"
-            fi
-            ;;
-        mysql_native_password)
-            echo -e "  ${GREEN}• 密码认证${NC}"
-            echo -e "  ${YELLOW}提示: 需要密码才能访问${NC}"
-            ;;
-        unknown)
-            echo -e "  ${RED}• 未知${NC} (无法连接数据库)"
-            ;;
-        *)
-            echo -e "  ${YELLOW}• $auth_method${NC}"
-            ;;
-    esac
+    if [ "$auth_info" = "unknown" ]; then
+        echo -e "  ${RED}• 未知${NC} (无法连接数据库)"
+        echo ""
+        return
+    fi
+    
+    # 检查是否包含多种认证方式
+    local has_password=false
+    local has_unix_socket=false
+    
+    if echo "$auth_info" | grep -qi "mysql_native_password\|IDENTIFIED BY"; then
+        has_password=true
+    fi
+    
+    if echo "$auth_info" | grep -qi "unix_socket"; then
+        has_unix_socket=true
+    fi
+    
+    # 根据检测结果显示
+    if [ "$has_password" = true ] && [ "$has_unix_socket" = true ]; then
+        echo -e "  ${GREEN}• 双重认证${NC} (Unix Socket 或 密码)"
+        echo -e "  ${YELLOW}提示: 可以通过 sudo 无密码访问，也可以使用密码${NC}"
+    elif [ "$has_unix_socket" = true ]; then
+        echo -e "  ${GREEN}• Unix Socket${NC} (无需密码)"
+        echo -e "  ${YELLOW}提示: 只能通过 sudo 访问，无法使用密码${NC}"
+    elif [ "$has_password" = true ]; then
+        echo -e "  ${GREEN}• 密码认证${NC}"
+        echo -e "  ${YELLOW}提示: 需要密码才能访问${NC}"
+    else
+        echo -e "  ${YELLOW}• 其他认证方式${NC}"
+        echo -e "  ${CYAN}详情: $(echo "$auth_info" | grep -i "IDENTIFIED")${NC}"
+    fi
     echo ""
 }
 
