@@ -1429,23 +1429,28 @@ menu_import_sql() {
     read_with_default "数据库端口" "3306" "db_port"
     read_with_default "数据库用户" "root" "db_user"
     
-    # 如果用户是 root，尝试从文件加载密码
+    # 根据主机类型智能处理密码
     local password_file="$HOME/.mysql_root_password"
-    local default_password=""
-    if [ "$db_user" = "root" ] && [ -f "$password_file" ] && [ -r "$password_file" ]; then
-        default_password=$(cat "$password_file" 2>/dev/null | head -n 1)
-        if [ -n "$default_password" ]; then
-            echo -e "${GREEN}✓ 已加载保存的 root 密码${NC}"
-        fi
-    fi
+    local db_password=""
     
-    # 读取密码，如果有默认值则使用
-    if [ -n "$default_password" ]; then
-        read -sp "数据库密码 [默认: 使用已保存密码, 直接Enter使用]: " db_password
-        echo
-        db_password=${db_password:-$default_password}
+    if [ "$db_host" = "localhost" ] || [ "$db_host" = "127.0.0.1" ]; then
+        # localhost 连接，不设置密码（使用 Unix Socket）
+        echo -e "${GREEN}✓ 检测到 localhost 连接，将使用 Unix Socket 认证（无需密码）${NC}"
+        db_password=""
     else
-        read_password_simple "数据库密码（如无密码直接按 Enter）" "db_password"
+        # 远程连接，尝试加载保存的密码
+        if [ "$db_user" = "root" ] && [ -f "$password_file" ] && [ -r "$password_file" ]; then
+            db_password=$(cat "$password_file" 2>/dev/null | head -n 1)
+            if [ -n "$db_password" ]; then
+                echo -e "${GREEN}✓ 已加载保存的 root 密码用于远程连接${NC}"
+            else
+                echo -e "${YELLOW}警告: 密码文件为空，请输入密码${NC}"
+                read_password_simple "数据库密码" "db_password"
+            fi
+        else
+            # 没有保存的密码，询问用户
+            read_password_simple "数据库密码（如无密码直接按 Enter）" "db_password"
+        fi
     fi
     
     # ============================================
