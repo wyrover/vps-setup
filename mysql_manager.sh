@@ -852,7 +852,13 @@ menu_change_root_password() {
     if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
         if change_root_password "$new_password"; then
             print_local_password_box "$new_password"
-            echo -e "${RED}重要提示: 请立即保存密码到安全位置${NC}\n"
+            
+            # 保存密码到文件
+            local password_file="$HOME/.mysql_root_password"
+            echo "$new_password" > "$password_file"
+            chmod 600 "$password_file"
+            echo -e "${GREEN}✓ 密码已保存到 $password_file${NC}"
+            echo -e "${RED}重要提示: 请妥善保管密码文件${NC}\n"
         fi
     else
         echo -e "${YELLOW}已取消操作${NC}"
@@ -1140,7 +1146,25 @@ menu_import_sql() {
     read_with_default "数据库主机" "localhost" "db_host"
     read_with_default "数据库端口" "3306" "db_port"
     read_with_default "数据库用户" "root" "db_user"
-    read_password_simple "数据库密码（如无密码直接按 Enter）" "db_password"
+    
+    # 如果用户是 root，尝试从文件加载密码
+    local password_file="$HOME/.mysql_root_password"
+    local default_password=""
+    if [ "$db_user" = "root" ] && [ -f "$password_file" ] && [ -r "$password_file" ]; then
+        default_password=$(cat "$password_file" 2>/dev/null | head -n 1)
+        if [ -n "$default_password" ]; then
+            echo -e "${GREEN}✓ 已加载保存的 root 密码${NC}"
+        fi
+    fi
+    
+    # 读取密码，如果有默认值则使用
+    if [ -n "$default_password" ]; then
+        read -sp "数据库密码 [默认: 使用已保存密码, 直接Enter使用]: " db_password
+        echo
+        db_password=${db_password:-$default_password}
+    else
+        read_password_simple "数据库密码（如无密码直接按 Enter）" "db_password"
+    fi
     
     # ============================================
     # 7. 询问是否清洗现有数据库
@@ -1211,7 +1235,12 @@ menu_import_sql() {
     # ============================================
     # 10. 执行还原操作
     # ============================================
-    export MYSQL_PWD="$db_password"
+    # 只在密码非空时设置 MYSQL_PWD
+    if [ -n "$db_password" ]; then
+        export MYSQL_PWD="$db_password"
+    else
+        unset MYSQL_PWD 2>/dev/null || true
+    fi
     local mysql_cmd="mysql -h${db_host} -P${db_port} -u${db_user} --connect-timeout=10"
     
     # 调试信息
@@ -1222,7 +1251,7 @@ menu_import_sql() {
     if [ -n "$db_password" ]; then
         echo -e "${CYAN}  密码: 已设置 (${#db_password} 位)${NC}"
     else
-        echo -e "${YELLOW}  密码: 未设置${NC}"
+        echo -e "${YELLOW}  密码: 未设置 (将尝试无密码连接)${NC}"
     fi
     
     # 删除数据库 (允许失败，但捕获输出以备调试)
