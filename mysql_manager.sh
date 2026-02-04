@@ -2,7 +2,7 @@
 set -euo pipefail
 
 #==========================================================
-# MySQL/MariaDB 远程访问管理脚本（完整版）
+# MySQL/MariaDB 远程访问管理脚本（完整版 - 修复版）
 #==========================================================
 
 # 默认配置
@@ -20,6 +20,200 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
+
+#==========================================================
+# 函数：检测操作系统
+#==========================================================
+detect_os() {
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS=$ID
+        OS_VERSION=$VERSION_ID
+    elif [ -f /etc/debian_version ]; then
+        OS="debian"
+    elif [ -f /etc/redhat-release ]; then
+        OS="rhel"
+    else
+        OS="unknown"
+    fi
+    echo "$OS"
+}
+
+#==========================================================
+# 函数：检查并安装依赖
+#==========================================================
+check_and_install_dependencies() {
+    echo -e "${YELLOW}正在检查依赖包...${NC}"
+    
+    local os_type
+    os_type=$(detect_os)
+    
+    local missing_packages=()
+    
+    # 检查 MySQL/MariaDB 客户端
+    if ! command -v mysql &> /dev/null; then
+        if [[ "$os_type" == "debian" || "$os_type" == "ubuntu" ]]; then
+            missing_packages+=("mariadb-client")
+        elif [[ "$os_type" == "rhel" || "$os_type" == "centos" || "$os_type" == "fedora" ]]; then
+            missing_packages+=("mariadb")
+        fi
+    fi
+    
+    # 检查 bzip2 (bunzip2 包含在 bzip2 包中)
+    if ! command -v bunzip2 &> /dev/null; then
+        missing_packages+=("bzip2")
+    fi
+    
+    # 检查 gzip (gunzip 包含在 gzip 包中)
+    if ! command -v gunzip &> /dev/null; then
+        missing_packages+=("gzip")
+    fi
+    
+    # 检查 curl
+    if ! command -v curl &> /dev/null; then
+        missing_packages+=("curl")
+    fi
+    
+    # 检查 unzip (可选)
+    if ! command -v unzip &> /dev/null; then
+        missing_packages+=("unzip")
+    fi
+    
+    # 如果有缺失的包，尝试安装
+    if [ ${#missing_packages[@]} -gt 0 ]; then
+        echo -e "${YELLOW}缺失以下依赖包: ${missing_packages[*]}${NC}"
+        echo -e "${CYAN}是否自动安装这些依赖？${NC}"
+        read -p "[Y/n]: " install_deps
+        install_deps=${install_deps:-yes}
+        
+        if [[ "$install_deps" =~ ^[Yy]|^[Yy][Ee][Ss]$ ]]; then
+            echo -e "${YELLOW}正在安装依赖包...${NC}"
+            
+            case "$os_type" in
+                debian|ubuntu)
+                    sudo apt-get update -qq
+                    if sudo apt-get install -y "${missing_packages[@]}"; then
+                        echo -e "${GREEN}✓ 依赖包安装成功${NC}"
+                    else
+                        echo -e "${RED}✗ 部分依赖包安装失败${NC}"
+                    fi
+                    ;;
+                rhel|centos|fedora)
+                    if sudo yum install -y "${missing_packages[@]}"; then
+                        echo -e "${GREEN}✓ 依赖包安装成功${NC}"
+                    else
+                        echo -e "${RED}✗ 部分依赖包安装失败${NC}"
+                    fi
+                    ;;
+                arch)
+                    if sudo pacman -S --noconfirm "${missing_packages[@]}"; then
+                        echo -e "${GREEN}✓ 依赖包安装成功${NC}"
+                    else
+                        echo -e "${RED}✗ 部分依赖包安装失败${NC}"
+                    fi
+                    ;;
+                *)
+                    echo -e "${RED}✗ 无法自动安装，请手动安装以下包:${NC}"
+                    echo -e "${YELLOW}Debian/Ubuntu: sudo apt install ${missing_packages[*]}${NC}"
+                    echo -e "${YELLOW}RHEL/CentOS: sudo yum install ${missing_packages[*]}${NC}"
+                    exit 1
+                    ;;
+            esac
+            
+            # 再次检查关键命令是否可用
+            local still_missing=()
+            if ! command -v mysql &> /dev/null; then
+                still_missing+=("mysql")
+            fi
+            if ! command -v bunzip2 &> /dev/null; then
+                still_missing+=("bunzip2")
+            fi
+            if ! command -v gunzip &> /dev/null; then
+                still_missing+=("gunzip")
+            fi
+            if ! command -v curl &> /dev/null; then
+                still_missing+=("curl")
+            fi
+            
+            if [ ${#still_missing[@]} -gt 0 ]; then
+                echo -e "${RED}✗ 以下命令仍然缺失: ${still_missing[*]}${NC}"
+                echo -e "${YELLOW}请尝试手动安装相关包后再运行此脚本${NC}"
+                exit 1
+            else
+                echo -e "${GREEN}✓ 所有必需依赖已满足${NC}"
+            fi
+        else
+            echo -e "${RED}✗ 缺少必要依赖，脚本无法继续运行${NC}"
+            exit 1
+        fi
+    else
+        echo -e "${GREEN}✓ 所有依赖已满足${NC}"
+    fi
+    
+    # 检查 MySQL 服务
+    echo -e "${YELLOW}正在检查 MySQL/MariaDB 服务...${NC}"
+    if systemctl is-active --quiet mariadb 2>/dev/null; then
+        MYSQL_SERVICE="mariadb"
+        echo -e "${GREEN}✓ 检测到 MariaDB 服务（运行中）${NC}"
+    elif systemctl is-active --quiet mysql 2>/dev/null; then
+        MYSQL_SERVICE="mysql"
+        echo -e "${GREEN}✓ 检测到 MySQL 服务（运行中）${NC}"
+    elif systemctl list-unit-files 2>/dev/null | grep -q mariadb.service; then
+        MYSQL_SERVICE="mariadb"
+        echo -e "${YELLOW}⚠ MariaDB 服务已安装但未运行${NC}"
+        echo -e "${CYAN}是否启动 MariaDB 服务？${NC}"
+        read -p "[Y/n]: " start_service
+        start_service=${start_service:-yes}
+        if [[ "$start_service" =~ ^[Yy]|^[Yy][Ee][Ss]$ ]]; then
+            sudo systemctl start mariadb
+            echo -e "${GREEN}✓ MariaDB 服务已启动${NC}"
+        fi
+    elif systemctl list-unit-files 2>/dev/null | grep -q mysql.service; then
+        MYSQL_SERVICE="mysql"
+        echo -e "${YELLOW}⚠ MySQL 服务已安装但未运行${NC}"
+        echo -e "${CYAN}是否启动 MySQL 服务？${NC}"
+        read -p "[Y/n]: " start_service
+        start_service=${start_service:-yes}
+        if [[ "$start_service" =~ ^[Yy]|^[Yy][Ee][Ss]$ ]]; then
+            sudo systemctl start mysql
+            echo -e "${GREEN}✓ MySQL 服务已启动${NC}"
+        fi
+    else
+        echo -e "${RED}✗ 未检测到 MySQL/MariaDB 服务${NC}"
+        echo -e "${YELLOW}是否需要安装 MariaDB Server？${NC}"
+        read -p "[Y/n]: " install_mariadb
+        install_mariadb=${install_mariadb:-yes}
+        
+        if [[ "$install_mariadb" =~ ^[Yy]|^[Yy][Ee][Ss]$ ]]; then
+            case "$os_type" in
+                debian|ubuntu)
+                    sudo apt-get install -y mariadb-server
+                    ;;
+                rhel|centos|fedora)
+                    sudo yum install -y mariadb-server
+                    ;;
+                arch)
+                    sudo pacman -S --noconfirm mariadb
+                    sudo mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
+                    ;;
+                *)
+                    echo -e "${RED}✗ 请手动安装 MySQL/MariaDB Server${NC}"
+                    exit 1
+                    ;;
+            esac
+            
+            sudo systemctl enable mariadb 2>/dev/null || sudo systemctl enable mysql 2>/dev/null
+            sudo systemctl start mariadb 2>/dev/null || sudo systemctl start mysql 2>/dev/null
+            MYSQL_SERVICE="mariadb"
+            echo -e "${GREEN}✓ MariaDB Server 已安装并启动${NC}"
+            
+            echo -e "${YELLOW}建议运行 mysql_secure_installation 来加固数据库安全${NC}"
+        else
+            echo -e "${RED}✗ 需要 MySQL/MariaDB 服务才能运行此脚本${NC}"
+            exit 1
+        fi
+    fi
+}
 
 #==========================================================
 # 函数：生成随机密码（确保包含数字和符号）
@@ -152,7 +346,9 @@ generate_random_password_optimized() {
     done
     
     # 第四步：打乱密码顺序（避免前两位总是数字+符号）
-    password=$(echo "$password" | fold -w1 | shuf | tr -d '\n')
+    if command -v shuf &> /dev/null; then
+        password=$(echo "$password" | fold -w1 | shuf | tr -d '\n')
+    fi
     
     echo "$password"
 }
@@ -416,40 +612,102 @@ decompress_file() {
     local file="$1"
     local output_file="${file%.*}"  # 移除最后一个扩展名
     
-    echo -e "${YELLOW}正在解压文件...${NC}"
+    echo -e "${CYAN}源文件: $file${NC}"
+    
+    # 检查文件是否存在
+    if [ ! -f "$file" ]; then
+        echo -e "${RED}✗ 文件不存在: $file${NC}"
+        return 1
+    fi
+    
+    # 检查文件大小
+    local file_size
+    file_size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)
+    echo -e "${CYAN}文件大小: $((file_size / 1024)) KB${NC}"
     
     case "$file" in
         *.bz2)
-            if bunzip2 -k -f "$file"; then
-                echo -e "${GREEN}✓ 解压成功: $output_file${NC}"
-                echo "$output_file"
-                return 0
+            echo -e "${CYAN}检测到 bzip2 压缩格式${NC}"
+            
+            # 检查 bunzip2 是否可用
+            if ! command -v bunzip2 &> /dev/null; then
+                echo -e "${RED}✗ bunzip2 命令不可用${NC}"
+                return 1
+            fi
+            
+            # 尝试解压
+            echo -e "${YELLOW}正在解压...${NC}"
+            if bunzip2 -k -f "$file" 2>&1; then
+                if [ -f "$output_file" ]; then
+                    echo -e "${GREEN}✓ 解压成功: $output_file${NC}"
+                    echo "$output_file"
+                    return 0
+                else
+                    echo -e "${RED}✗ 解压后文件不存在: $output_file${NC}"
+                    return 1
+                fi
             else
-                echo -e "${RED}✗ 解压失败${NC}"
+                local exit_code=$?
+                echo -e "${RED}✗ bunzip2 解压失败 (退出码: $exit_code)${NC}"
+                
+                # 尝试检查文件是否损坏
+                if bunzip2 -t "$file" 2>&1 | grep -qi "bad\|error\|corrupt"; then
+                    echo -e "${RED}✗ 文件可能已损坏，请重新下载${NC}"
+                fi
                 return 1
             fi
             ;;
         *.gz)
-            if gunzip -k -f "$file"; then
-                echo -e "${GREEN}✓ 解压成功: $output_file${NC}"
-                echo "$output_file"
-                return 0
+            echo -e "${CYAN}检测到 gzip 压缩格式${NC}"
+            
+            if ! command -v gunzip &> /dev/null; then
+                echo -e "${RED}✗ gunzip 命令不可用${NC}"
+                return 1
+            fi
+            
+            echo -e "${YELLOW}正在解压...${NC}"
+            if gunzip -k -f "$file" 2>&1; then
+                if [ -f "$output_file" ]; then
+                    echo -e "${GREEN}✓ 解压成功: $output_file${NC}"
+                    echo "$output_file"
+                    return 0
+                else
+                    echo -e "${RED}✗ 解压后文件不存在: $output_file${NC}"
+                    return 1
+                fi
             else
-                echo -e "${RED}✗ 解压失败${NC}"
+                echo -e "${RED}✗ gunzip 解压失败${NC}"
                 return 1
             fi
             ;;
         *.zip)
-            output_file="${file%.*}"
-            if unzip -o "$file" -d "$(dirname "$file")"; then
+            echo -e "${CYAN}检测到 zip 压缩格式${NC}"
+            
+            if ! command -v unzip &> /dev/null; then
+                echo -e "${RED}✗ unzip 命令不可用${NC}"
+                return 1
+            fi
+            
+            local extract_dir
+            extract_dir=$(dirname "$file")
+            
+            echo -e "${YELLOW}正在解压...${NC}"
+            if unzip -o "$file" -d "$extract_dir" 2>&1 | grep -v "^Archive:"; then
                 echo -e "${GREEN}✓ 解压成功${NC}"
                 # 尝试找到 .sql 文件
                 local sql_file
-                sql_file=$(find "$(dirname "$file")" -name "*.sql" -type f | head -n 1)
-                echo "$sql_file"
-                return 0
+                sql_file=$(find "$extract_dir" -name "*.sql" -type f -newer "$file" 2>/dev/null | head -n 1)
+                
+                if [ -n "$sql_file" ] && [ -f "$sql_file" ]; then
+                    echo -e "${CYAN}找到 SQL 文件: $sql_file${NC}"
+                    echo "$sql_file"
+                    return 0
+                else
+                    echo -e "${RED}✗ 未找到 SQL 文件${NC}"
+                    return 1
+                fi
             else
-                echo -e "${RED}✗ 解压失败${NC}"
+                echo -e "${RED}✗ unzip 解压失败${NC}"
                 return 1
             fi
             ;;
@@ -459,7 +717,7 @@ decompress_file() {
             return 0
             ;;
         *)
-            echo -e "${RED}✗ 不支持的文件格式${NC}"
+            echo -e "${RED}✗ 不支持的文件格式: $file${NC}"
             return 1
             ;;
     esac
@@ -471,9 +729,9 @@ decompress_file() {
 show_status() {
     echo -e "\n${YELLOW}当前数据库监听状态:${NC}"
     if command -v ss >/dev/null 2>&1; then
-        sudo ss -tlnp | grep 3306 || echo "未检测到 3306 端口监听"
+        sudo ss -tlnp 2>/dev/null | grep 3306 || echo "未检测到 3306 端口监听"
     elif command -v netstat >/dev/null 2>&1; then
-        sudo netstat -tlnp | grep 3306 || echo "未检测到 3306 端口监听"
+        sudo netstat -tlnp 2>/dev/null | grep 3306 || echo "未检测到 3306 端口监听"
     else
         echo "无法检测（需要 ss 或 netstat 工具）"
     fi
@@ -706,12 +964,51 @@ menu_import_sql() {
     # 4. 解压文件
     # ============================================
     local sql_file
-    sql_file=$(decompress_file "$download_path")
     
-    if [ -z "$sql_file" ] || [ ! -f "$sql_file" ]; then
-        echo -e "${RED}✗ 解压失败或找不到 SQL 文件，操作终止${NC}"
+    echo -e "\n${YELLOW}正在处理文件...${NC}"
+    
+    # 先检查是否需要解压
+    if [[ "$download_path" == *.sql ]]; then
+        # 已经是 SQL 文件，无需解压
+        sql_file="$download_path"
+        echo -e "${GREEN}✓ 文件已经是 SQL 格式，无需解压${NC}"
+    elif [[ "$download_path" == *.bz2 ]] || [[ "$download_path" == *.gz ]] || [[ "$download_path" == *.zip ]]; then
+        # 需要解压
+        local decompressed_file
+        decompressed_file=$(decompress_file "$download_path")
+        local decompress_status=$?
+        
+        if [ $decompress_status -eq 0 ] && [ -n "$decompressed_file" ] && [ -f "$decompressed_file" ]; then
+            sql_file="$decompressed_file"
+        else
+            echo -e "${RED}✗ 解压失败${NC}"
+            
+            # 提供手动解压建议
+            echo -e "${YELLOW}您可以尝试手动解压:${NC}"
+            if [[ "$download_path" == *.bz2 ]]; then
+                echo -e "  bunzip2 -k \"$download_path\""
+            elif [[ "$download_path" == *.gz ]]; then
+                echo -e "  gunzip -k \"$download_path\""
+            elif [[ "$download_path" == *.zip ]]; then
+                echo -e "  unzip \"$download_path\""
+            fi
+            
+            return
+        fi
+    else
+        echo -e "${RED}✗ 不支持的文件格式${NC}"
         return
     fi
+    
+    # 验证 SQL 文件
+    if [ ! -f "$sql_file" ]; then
+        echo -e "${RED}✗ SQL 文件不存在: $sql_file${NC}"
+        return
+    fi
+    
+    local sql_file_size
+    sql_file_size=$(stat -c%s "$sql_file" 2>/dev/null || stat -f%z "$sql_file" 2>/dev/null)
+    echo -e "${GREEN}✓ SQL 文件大小: $((sql_file_size / 1024 / 1024)) MB${NC}"
     
     # ============================================
     # 5. 智能嗅探数据库名
@@ -722,13 +1019,12 @@ menu_import_sql() {
     local db_in_file=""
     local contains_create_stmts=false
     
-    # 根据文件类型读取前100行
-    if [[ "$download_path" == *.bz2 ]]; then
-        header_content=$(bzcat "$download_path" | head -n 100)
-    elif [[ "$download_path" == *.gz ]]; then
-        header_content=$(zcat "$download_path" | head -n 100)
-    else
-        header_content=$(head -n 100 "$sql_file")
+    # 读取 SQL 文件的前 100 行
+    header_content=$(head -n 100 "$sql_file" 2>/dev/null)
+    
+    if [ -z "$header_content" ]; then
+        echo -e "${RED}✗ 无法读取 SQL 文件内容${NC}"
+        return
     fi
     
     # 尝试检测数据库名
@@ -881,29 +1177,20 @@ menu_import_sql() {
     local restore_success=false
     if [ "$contains_create_stmts" = true ]; then
         # 文件包含 USE 或 CREATE DATABASE 语句
-        if [[ "$download_path" == *.bz2 ]]; then
-            bunzip2 < "$download_path" | $mysql_cmd 2>/dev/null
-        elif [[ "$download_path" == *.gz ]]; then
-            gunzip < "$download_path" | $mysql_cmd 2>/dev/null
+        if $mysql_cmd < "$sql_file" 2>/dev/null; then
+            echo -e "${GREEN}✓ 数据还原完成${NC}"
+            restore_success=true
         else
-            $mysql_cmd < "$sql_file" 2>/dev/null
+            echo -e "${RED}✗ 数据还原遇到错误${NC}"
         fi
     else
         # 文件不包含数据库选择语句，需要指定数据库
-        if [[ "$download_path" == *.bz2 ]]; then
-            bunzip2 < "$download_path" | $mysql_cmd "$target_db" 2>/dev/null
-        elif [[ "$download_path" == *.gz ]]; then
-            gunzip < "$download_path" | $mysql_cmd "$target_db" 2>/dev/null
+        if $mysql_cmd "$target_db" < "$sql_file" 2>/dev/null; then
+            echo -e "${GREEN}✓ 数据还原完成${NC}"
+            restore_success=true
         else
-            $mysql_cmd "$target_db" < "$sql_file" 2>/dev/null
+            echo -e "${RED}✗ 数据还原遇到错误${NC}"
         fi
-    fi
-    
-    if [ ${PIPESTATUS[1]} -eq 0 ]; then
-        echo -e "${GREEN}✓ 数据还原完成${NC}"
-        restore_success=true
-    else
-        echo -e "${RED}✗ 数据还原遇到错误${NC}"
     fi
     
     # ============================================
@@ -1002,6 +1289,12 @@ show_main_menu() {
 # 主流程
 #==========================================================
 main() {
+    # 首先检查并安装依赖
+    check_and_install_dependencies
+    
+    echo ""
+    read -p "按 Enter 键进入主菜单..."
+    
     while true; do
         show_main_menu
         read -p "请输入选项 [1-5]: " choice
