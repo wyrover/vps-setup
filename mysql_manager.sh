@@ -1214,10 +1214,13 @@ menu_import_sql() {
     export MYSQL_PWD="$db_password"
     local mysql_cmd="mysql -h${db_host} -P${db_port} -u${db_user}"
     
-    # 删除数据库
+    # 删除数据库 (允许失败，因为如果数据库不存在也没关系)
     echo -e "\n${YELLOW}正在删除数据库 ${target_db}...${NC}"
-    if $mysql_cmd -e "DROP DATABASE IF EXISTS \`${target_db}\`;" 2>/dev/null; then
-        echo -e "${GREEN}✓ 数据库已删除${NC}"
+    $mysql_cmd -e "DROP DATABASE IF EXISTS \`${target_db}\`;" 2>/dev/null || true
+    
+    # 验证是否真的删除了（或者本来就不存在）
+    if ! $mysql_cmd -e "USE \`${target_db}\`;" 2>/dev/null; then
+        echo -e "${GREEN}✓ 数据库环境已清理${NC}"
     else
         echo -e "${RED}✗ 删除数据库失败${NC}"
         unset MYSQL_PWD
