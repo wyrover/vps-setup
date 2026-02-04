@@ -150,7 +150,7 @@ check_and_install_dependencies() {
         echo -e "${GREEN}✓ 所有依赖已满足${NC}"
     fi
     
-    # 检查 MySQL 服务
+    # 检查 MySQL 服务（可选，用于本地连接）
     echo -e "${YELLOW}正在检查 MySQL/MariaDB 服务...${NC}"
     if systemctl is-active --quiet mariadb 2>/dev/null; then
         MYSQL_SERVICE="mariadb"
@@ -161,57 +161,13 @@ check_and_install_dependencies() {
     elif systemctl list-unit-files 2>/dev/null | grep -q mariadb.service; then
         MYSQL_SERVICE="mariadb"
         echo -e "${YELLOW}⚠ MariaDB 服务已安装但未运行${NC}"
-        echo -e "${CYAN}是否启动 MariaDB 服务？${NC}"
-        read -p "[Y/n]: " start_service
-        start_service=${start_service:-yes}
-        if [[ "$start_service" =~ ^[Yy]|^[Yy][Ee][Ss]$ ]]; then
-            sudo systemctl start mariadb
-            echo -e "${GREEN}✓ MariaDB 服务已启动${NC}"
-        fi
     elif systemctl list-unit-files 2>/dev/null | grep -q mysql.service; then
         MYSQL_SERVICE="mysql"
         echo -e "${YELLOW}⚠ MySQL 服务已安装但未运行${NC}"
-        echo -e "${CYAN}是否启动 MySQL 服务？${NC}"
-        read -p "[Y/n]: " start_service
-        start_service=${start_service:-yes}
-        if [[ "$start_service" =~ ^[Yy]|^[Yy][Ee][Ss]$ ]]; then
-            sudo systemctl start mysql
-            echo -e "${GREEN}✓ MySQL 服务已启动${NC}"
-        fi
     else
-        echo -e "${RED}✗ 未检测到 MySQL/MariaDB 服务${NC}"
-        echo -e "${YELLOW}是否需要安装 MariaDB Server？${NC}"
-        read -p "[Y/n]: " install_mariadb
-        install_mariadb=${install_mariadb:-yes}
-        
-        if [[ "$install_mariadb" =~ ^[Yy]|^[Yy][Ee][Ss]$ ]]; then
-            case "$os_type" in
-                debian|ubuntu)
-                    sudo apt-get install -y mariadb-server
-                    ;;
-                rhel|centos|fedora)
-                    sudo yum install -y mariadb-server
-                    ;;
-                arch)
-                    sudo pacman -S --noconfirm mariadb
-                    sudo mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
-                    ;;
-                *)
-                    echo -e "${RED}✗ 请手动安装 MySQL/MariaDB Server${NC}"
-                    exit 1
-                    ;;
-            esac
-            
-            sudo systemctl enable mariadb 2>/dev/null || sudo systemctl enable mysql 2>/dev/null
-            sudo systemctl start mariadb 2>/dev/null || sudo systemctl start mysql 2>/dev/null
-            MYSQL_SERVICE="mariadb"
-            echo -e "${GREEN}✓ MariaDB Server 已安装并启动${NC}"
-            
-            echo -e "${YELLOW}建议运行 mysql_secure_installation 来加固数据库安全${NC}"
-        else
-            echo -e "${RED}✗ 需要 MySQL/MariaDB 服务才能运行此脚本${NC}"
-            exit 1
-        fi
+        echo -e "${YELLOW}⚠ 未检测到本地 MySQL/MariaDB 服务${NC}"
+        echo -e "${CYAN}提示: 如果您要连接远程数据库，可以忽略此警告${NC}"
+        MYSQL_SERVICE="mariadb"
     fi
 }
 
