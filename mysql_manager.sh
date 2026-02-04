@@ -2,7 +2,7 @@
 set -euo pipefail
 
 #==========================================================
-# MySQL/MariaDB 远程访问管理脚本（完整版 - 修复版）
+# MySQL/MariaDB 远程访问管理脚本（完整版 - 最终修复版）
 #==========================================================
 
 # 默认配置
@@ -580,169 +580,201 @@ download_sql_file() {
     local username="$2"
     local password="$3"
     local output_file="$4"
+    local auth_file="$HOME/.mysql_manager_auth"
     
-    echo -e "${YELLOW}正在下载文件...${NC}"
-    echo -e "${CYAN}URL: $url${NC}"
-    
-    # 使用 curl 下载，支持 Basic Auth
-    if [ -n "$username" ] && [ -n "$password" ]; then
-        if curl -f -L -u "${username}:${password}" -o "$output_file" "$url" --progress-bar; then
-            echo -e "${GREEN}✓ 文件下载成功: $output_file${NC}"
-            return 0
-        else
-            echo -e "${RED}✗ 文件下载失败${NC}"
-            return 1
-        fi
-    else
-        # 无认证下载
-        if curl -f -L -o "$output_file" "$url" --progress-bar; then
-            echo -e "${GREEN}✓ 文件下载成功: $output_file${NC}"
-            return 0
-        else
-            echo -e "${RED}✗ 文件下载失败${NC}"
-            return 1
+    # 尝试读取保存的凭据（如果传入的用户名为空，或作为备用）
+    # 优先使用保存的凭据，除非显式传入了参数。
+    # 但脚本逻辑中通常可能初次调用没有传参，或者传了错误的。
+    # 策略：如果没传参，尝试读取文件。
+    if [ -z "$username" ] && [ -f "$auth_file" ] && [ -r "$auth_file" ]; then
+        username=$(sed -n '1p' "$auth_file")
+        password=$(sed -n '2p' "$auth_file")
+        if [ -n "$username" ]; then
+             echo -e "${GREEN}✓ 已加载保存的访问凭据 (用户: $username)${NC}"
         fi
     fi
+    
+    while true; do
+        echo -e "${YELLOW}正在下载文件...${NC}"
+        echo -e "${CYAN}URL: $url${NC}"
+        
+        local curl_exit_code=0
+        
+        # 使用 curl 下载
+        if [ -n "$username" ] && [ -n "$password" ]; then
+            curl -f -L -u "${username}:${password}" -o "$output_file" "$url" --progress-bar || curl_exit_code=$?
+        else
+            # 无认证下载
+            curl -f -L -o "$output_file" "$url" --progress-bar || curl_exit_code=$?
+        fi
+        
+        if [ $curl_exit_code -eq 0 ]; then
+            echo -e "${GREEN}✓ 文件下载成功: $output_file${NC}"
+            return 0
+        else
+            echo -e "${RED}✗ 文件下载失败 (错误码: $curl_exit_code)${NC}"
+            
+            # 提示输入凭据
+            echo -e "${YELLOW}下载失败，可能需要认证或凭据无效。${NC}"
+            echo -e "${CYAN}请输入访问用户名 (直接回车取消重试):${NC}"
+            
+            local input_user
+            read -p "> " input_user
+            
+            if [ -z "$input_user" ]; then
+                echo -e "${RED}✗ 已取消下载${NC}"
+                return 1
+            fi
+            
+            local input_pass
+            read -sp "请输入密码: " input_pass
+            echo ""
+            
+            # 更新变量
+            username="$input_user"
+            password="$input_pass"
+            
+            # 保存到文件
+            echo "$username" > "$auth_file"
+            echo "$password" >> "$auth_file"
+            chmod 600 "$auth_file"
+            echo -e "${GREEN}✓ 凭据已保存到 $auth_file${NC}"
+            
+            echo -e "${YELLOW}准备重试...${NC}"
+            sleep 1
+        fi
+    done
 }
 
 #==========================================================
-# 函数：解压文件（使用最可靠的方法）
+# 函数：解压文件（只输出文件路径到 stdout）
 #==========================================================
 decompress_file() {
     local file="$1"
     local output_file="${file%.*}"  # 移除最后一个扩展名
     
-    echo -e "${CYAN}源文件: $file${NC}"
+    # 所有日志输出到 stderr，避免污染返回值
+    echo "源文件: $file" >&2
     
     # 检查文件是否存在
     if [ ! -f "$file" ]; then
-        echo -e "${RED}✗ 文件不存在: $file${NC}"
+        echo "✗ 文件不存在: $file" >&2
         return 1
     fi
     
     # 检查文件大小
     local file_size
     file_size=$(stat -c%s "$file" 2>/dev/null || stat -f%z "$file" 2>/dev/null)
-    echo -e "${CYAN}压缩文件大小: $((file_size / 1024)) KB${NC}"
+    echo "压缩文件大小: $((file_size / 1024)) KB" >&2
     
     # 删除已存在的输出文件
     if [ -f "$output_file" ]; then
-        echo -e "${YELLOW}删除已存在的目标文件: $output_file${NC}"
+        echo "删除已存在的目标文件: $output_file" >&2
         rm -f "$output_file"
     fi
     
     case "$file" in
         *.bz2)
-            echo -e "${CYAN}检测到 bzip2 压缩格式${NC}"
+            echo "检测到 bzip2 压缩格式" >&2
             
             # 检查 bzcat 是否可用
             if ! command -v bzcat &> /dev/null; then
-                echo -e "${RED}✗ bzcat 命令不可用${NC}"
+                echo "✗ bzcat 命令不可用" >&2
                 return 1
             fi
             
-            # 使用 bzcat 解压（最可靠的方法）
-            echo -e "${YELLOW}正在解压...${NC}"
+            # 使用 bzcat 解压
+            echo "正在解压..." >&2
             if bzcat "$file" > "$output_file" 2>/dev/null; then
                 if [ -f "$output_file" ] && [ -s "$output_file" ]; then
                     local output_size
                     output_size=$(stat -c%s "$output_file" 2>/dev/null || stat -f%z "$output_file" 2>/dev/null)
-                    echo -e "${GREEN}✓ 解压成功: $output_file${NC}"
-                    echo -e "${GREEN}  解压后大小: $((output_size / 1024 / 1024)) MB${NC}"
+                    echo "✓ 解压成功: $output_file" >&2
+                    echo "  解压后大小: $((output_size / 1024 / 1024)) MB" >&2
+                    # 只输出文件路径到 stdout
                     echo "$output_file"
                     return 0
                 else
-                    echo -e "${RED}✗ 解压后文件为空或不存在${NC}"
+                    echo "✗ 解压后文件为空或不存在" >&2
                     rm -f "$output_file"
                     return 1
                 fi
             else
-                echo -e "${RED}✗ bzcat 解压失败${NC}"
-                
-                # 测试文件完整性
-                echo -e "${YELLOW}正在测试文件完整性...${NC}"
-                if bunzip2 -t "$file" 2>&1 | tee /tmp/bzip2_test.log; then
-                    echo -e "${GREEN}文件完整性测试通过${NC}"
-                else
-                    echo -e "${RED}✗ 文件可能已损坏${NC}"
-                    cat /tmp/bzip2_test.log
-                fi
-                
+                echo "✗ bzcat 解压失败" >&2
                 return 1
             fi
             ;;
         *.gz)
-            echo -e "${CYAN}检测到 gzip 压缩格式${NC}"
+            echo "检测到 gzip 压缩格式" >&2
             
             if ! command -v zcat &> /dev/null; then
-                echo -e "${RED}✗ zcat 命令不可用${NC}"
+                echo "✗ zcat 命令不可用" >&2
                 return 1
             fi
             
-            echo -e "${YELLOW}正在解压...${NC}"
+            echo "正在解压..." >&2
             if zcat "$file" > "$output_file" 2>/dev/null; then
                 if [ -f "$output_file" ] && [ -s "$output_file" ]; then
                     local output_size
                     output_size=$(stat -c%s "$output_file" 2>/dev/null || stat -f%z "$output_file" 2>/dev/null)
-                    echo -e "${GREEN}✓ 解压成功: $output_file${NC}"
-                    echo -e "${GREEN}  解压后大小: $((output_size / 1024 / 1024)) MB${NC}"
+                    echo "✓ 解压成功: $output_file" >&2
+                    echo "  解压后大小: $((output_size / 1024 / 1024)) MB" >&2
                     echo "$output_file"
                     return 0
                 else
-                    echo -e "${RED}✗ 解压后文件为空或不存在${NC}"
+                    echo "✗ 解压后文件为空或不存在" >&2
                     rm -f "$output_file"
                     return 1
                 fi
             else
-                echo -e "${RED}✗ zcat 解压失败${NC}"
+                echo "✗ zcat 解压失败" >&2
                 return 1
             fi
             ;;
         *.zip)
-            echo -e "${CYAN}检测到 zip 压缩格式${NC}"
+            echo "检测到 zip 压缩格式" >&2
             
             if ! command -v unzip &> /dev/null; then
-                echo -e "${RED}✗ unzip 命令不可用${NC}"
+                echo "✗ unzip 命令不可用" >&2
                 return 1
             fi
             
             local extract_dir
             extract_dir=$(dirname "$file")
             
-            echo -e "${YELLOW}正在解压...${NC}"
-            if unzip -o -q "$file" -d "$extract_dir" 2>/dev/null; then
-                echo -e "${GREEN}✓ 解压成功${NC}"
+            echo "正在解压..." >&2
+            if unzip -o -q "$file" -d "$extract_dir" 2>&1 >&2; then
+                echo "✓ 解压成功" >&2
                 
                 # 查找 SQL 文件
                 local sql_file
                 sql_file=$(find "$extract_dir" -maxdepth 1 -name "*.sql" -type f 2>/dev/null | head -n 1)
                 
                 if [ -n "$sql_file" ] && [ -f "$sql_file" ]; then
-                    echo -e "${CYAN}找到 SQL 文件: $sql_file${NC}"
+                    echo "找到 SQL 文件: $sql_file" >&2
                     echo "$sql_file"
                     return 0
                 else
-                    echo -e "${RED}✗ 未找到 SQL 文件${NC}"
+                    echo "✗ 未找到 SQL 文件" >&2
                     return 1
                 fi
             else
-                echo -e "${RED}✗ unzip 解压失败${NC}"
+                echo "✗ unzip 解压失败" >&2
                 return 1
             fi
             ;;
         *.sql)
-            echo -e "${CYAN}文件已经是 SQL 格式，无需解压${NC}"
+            echo "文件已经是 SQL 格式，无需解压" >&2
             echo "$file"
             return 0
             ;;
         *)
-            echo -e "${RED}✗ 不支持的文件格式: $file${NC}"
-            echo -e "${YELLOW}支持的格式: .bz2, .gz, .zip, .sql${NC}"
+            echo "✗ 不支持的文件格式: $file" >&2
+            echo "支持的格式: .bz2, .gz, .zip, .sql" >&2
             return 1
             ;;
     esac
 }
-
 
 #==========================================================
 # 函数：显示当前监听状态
@@ -996,24 +1028,44 @@ menu_import_sql() {
     elif [[ "$download_path" == *.bz2 ]] || [[ "$download_path" == *.gz ]] || [[ "$download_path" == *.zip ]]; then
         # 需要解压
         local decompressed_file
-        decompressed_file=$(decompress_file "$download_path")
-        local decompress_status=$?
         
-        if [ $decompress_status -eq 0 ] && [ -n "$decompressed_file" ] && [ -f "$decompressed_file" ]; then
-            sql_file="$decompressed_file"
+        # 临时关闭 errexit，以便捕获错误
+        set +e
+        decompressed_file=$(decompress_file "$download_path" 2>&1)
+        local decompress_status=$?
+        set -e
+        
+        if [ $decompress_status -eq 0 ] && [ -n "$decompressed_file" ]; then
+            # decompress_file 成功返回文件路径（最后一行）
+            sql_file=$(echo "$decompressed_file" | tail -n 1)
+            
+            # 验证文件
+            if [ -f "$sql_file" ] && [ -s "$sql_file" ]; then
+                local sql_file_size
+                sql_file_size=$(stat -c%s "$sql_file" 2>/dev/null || stat -f%z "$sql_file" 2>/dev/null)
+                echo -e "${GREEN}✓ 解压成功${NC}"
+                echo -e "${CYAN}  文件: $sql_file${NC}"
+                echo -e "${CYAN}  大小: $((sql_file_size / 1024 / 1024)) MB${NC}"
+            else
+                echo -e "${RED}✗ 解压失败或文件无效${NC}"
+                echo -e "${YELLOW}您可以尝试手动解压:${NC}"
+                if [[ "$download_path" == *.bz2 ]]; then
+                    echo -e "  ${CYAN}bzcat \"$download_path\" > \"${download_path%.bz2}\"${NC}"
+                fi
+                return
+            fi
         else
             echo -e "${RED}✗ 解压失败${NC}"
-            
-            # 提供手动解压建议
             echo -e "${YELLOW}您可以尝试手动解压:${NC}"
             if [[ "$download_path" == *.bz2 ]]; then
-                echo -e "  bunzip2 -k \"$download_path\""
+                echo -e "  ${CYAN}bzcat \"$download_path\" > \"${download_path%.bz2}\"${NC}"
+                echo -e "  或"
+                echo -e "  ${CYAN}bunzip2 -k \"$download_path\"${NC}"
             elif [[ "$download_path" == *.gz ]]; then
-                echo -e "  gunzip -k \"$download_path\""
+                echo -e "  ${CYAN}zcat \"$download_path\" > \"${download_path%.gz}\"${NC}"
             elif [[ "$download_path" == *.zip ]]; then
-                echo -e "  unzip \"$download_path\""
+                echo -e "  ${CYAN}unzip \"$download_path\"${NC}"
             fi
-            
             return
         fi
     else
@@ -1021,15 +1073,16 @@ menu_import_sql() {
         return
     fi
     
-    # 验证 SQL 文件
+    # 最终验证 SQL 文件
     if [ ! -f "$sql_file" ]; then
         echo -e "${RED}✗ SQL 文件不存在: $sql_file${NC}"
         return
     fi
     
-    local sql_file_size
-    sql_file_size=$(stat -c%s "$sql_file" 2>/dev/null || stat -f%z "$sql_file" 2>/dev/null)
-    echo -e "${GREEN}✓ SQL 文件大小: $((sql_file_size / 1024 / 1024)) MB${NC}"
+    if [ ! -s "$sql_file" ]; then
+        echo -e "${RED}✗ SQL 文件为空: $sql_file${NC}"
+        return
+    fi
     
     # ============================================
     # 5. 智能嗅探数据库名
@@ -1108,8 +1161,6 @@ menu_import_sql() {
     
     if [ "$clean_db_choice" != "yes" ]; then
         echo -e "${YELLOW}用户选择不删除数据库，操作已取消${NC}"
-        rm -f "$sql_file"
-        [ "$sql_file" != "$download_path" ] && rm -f "$download_path"
         return
     fi
     
@@ -1161,8 +1212,6 @@ menu_import_sql() {
     
     if [ "$final_confirm" != "confirm" ]; then
         echo -e "${YELLOW}操作已取消${NC}"
-        rm -f "$sql_file"
-        [ "$sql_file" != "$download_path" ] && rm -f "$download_path"
         return
     fi
     
@@ -1281,6 +1330,9 @@ menu_import_sql() {
         echo -e "${GREEN}✓ 临时文件已清理${NC}"
     else
         echo -e "${YELLOW}临时文件保留在: ${download_path}${NC}"
+        if [ "$sql_file" != "$download_path" ]; then
+            echo -e "${YELLOW}解压后文件: ${sql_file}${NC}"
+        fi
     fi
     
     echo -e "\n${GREEN}操作完成！${NC}"
