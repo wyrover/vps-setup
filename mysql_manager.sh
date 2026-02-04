@@ -395,7 +395,7 @@ read_with_default() {
     fi
     
     # 使用默认值（如果用户直接按 Enter）
-    eval "$varname=\"${input:-$default}\""
+    printf -v "$varname" '%s' "${input:-$default}"
 }
 
 #==========================================================
@@ -425,12 +425,12 @@ read_password_with_random_default() {
         
         # 如果用户直接按 Enter，使用随机生成的密码
         if [ -z "$input" ]; then
-            eval "$varname=\"$default_password\""
+            printf -v "$varname" '%s' "$default_password"
             break
         else
             # 验证用户输入的密码
             if validate_password "$input"; then
-                eval "$varname=\"$input\""
+                printf -v "$varname" '%s' "$input"
                 break
             else
                 echo -e "${RED}✗ 密码必须包含至少一个数字、一个特殊符号(!@#\$%^&*-_=+)，且长度不少于8位${NC}"
@@ -451,7 +451,7 @@ read_password_simple() {
     read -sp "$prompt: " input
     echo
     
-    eval "$varname=\"$input\""
+    printf -v "$varname" '%s' "$input"
 }
 
 #==========================================================
@@ -973,18 +973,11 @@ menu_import_sql() {
     fi
     
     # ============================================
-    # 2. Basic Auth 认证
+    # 2. Basic Auth 认证 (自动处理)
     # ============================================
-    echo -e "\n${CYAN}是否需要 Basic Auth 认证？${NC}"
-    read -p "[y/N]: " need_auth
-    
+    # 移除手动询问，交由 download_sql_file 函数根据需要处理
     local auth_username=""
     local auth_password=""
-    
-    if [[ "$need_auth" =~ ^[Yy]$ ]]; then
-        read -p "用户名: " auth_username
-        read_password_simple "密码" "auth_password"
-    fi
     
     # ============================================
     # 3. 下载文件
