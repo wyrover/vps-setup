@@ -1229,20 +1229,42 @@ menu_import_sql() {
     if ! $mysql_cmd -e "USE \`${target_db}\`;" 2>/dev/null; then
         echo -e "${GREEN}✓ 数据库环境已清理${NC}"
     else
-        echo -e "${RED}✗ 删除数据库失败${NC}"
+        echo -e "${RED}✗ 删除数据库失败 - 数据库仍然存在${NC}"
         echo -e "${YELLOW}错误详情: ${drop_output}${NC}"
+        # 显示当前存在的数据库
+        echo -e "${CYAN}当前数据库列表:${NC}"
+        $mysql_cmd -e "SHOW DATABASES LIKE '${target_db}';" 2>/dev/null || true
         unset MYSQL_PWD
         return
+    fi
+    
+    # 再次确认数据库不存在
+    echo -e "${CYAN}验证: 检查数据库是否存在...${NC}"
+    if $mysql_cmd -e "SHOW DATABASES LIKE '${target_db}';" 2>/dev/null | grep -q "${target_db}"; then
+        echo -e "${RED}警告: 数据库 ${target_db} 仍然存在！${NC}"
+    else
+        echo -e "${GREEN}确认: 数据库 ${target_db} 不存在${NC}"
     fi
     
     # 创建数据库
     echo -e "${YELLOW}正在创建数据库 ${target_db}...${NC}"
     local create_output
-    if create_output=$($mysql_cmd -e "CREATE DATABASE IF NOT EXISTS \`${target_db}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>&1); then
+    create_output=$($mysql_cmd -e "CREATE DATABASE IF NOT EXISTS \`${target_db}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>&1)
+    local create_exit_code=$?
+    
+    if [ $create_exit_code -eq 0 ]; then
         echo -e "${GREEN}✓ 数据库已创建${NC}"
     else
-        echo -e "${RED}✗ 创建数据库失败${NC}"
-        echo -e "${YELLOW}错误详情: ${create_output}${NC}"
+        echo -e "${RED}✗ 创建数据库失败 (退出码: ${create_exit_code})${NC}"
+        if [ -n "$create_output" ]; then
+            echo -e "${YELLOW}错误详情:${NC}"
+            echo -e "${YELLOW}${create_output}${NC}"
+        else
+            echo -e "${YELLOW}无错误输出 - 可能是权限问题${NC}"
+        fi
+        # 尝试显示用户权限
+        echo -e "${CYAN}检查用户权限:${NC}"
+        $mysql_cmd -e "SHOW GRANTS FOR CURRENT_USER();" 2>&1 || true
         unset MYSQL_PWD
         return
     fi
