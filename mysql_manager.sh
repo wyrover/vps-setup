@@ -1248,9 +1248,12 @@ menu_import_sql() {
     
     # 创建数据库
     echo -e "${YELLOW}正在创建数据库 ${target_db}...${NC}"
+    echo -e "${CYAN}[调试] 准备执行 CREATE DATABASE 命令...${NC}"
     local create_output
+    echo -e "${CYAN}[调试] 开始执行 mysql 命令...${NC}"
     create_output=$($mysql_cmd -e "CREATE DATABASE IF NOT EXISTS \`${target_db}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" 2>&1)
     local create_exit_code=$?
+    echo -e "${CYAN}[调试] 命令执行完成，退出码: ${create_exit_code}${NC}"
     
     if [ $create_exit_code -eq 0 ]; then
         echo -e "${GREEN}✓ 数据库已创建${NC}"
