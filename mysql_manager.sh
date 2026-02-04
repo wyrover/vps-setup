@@ -573,6 +573,85 @@ change_root_password() {
 }
 
 #==========================================================
+# 函数：强制重置 root 密码（无需当前密码）
+#==========================================================
+force_reset_root_password() {
+    local new_password="$1"
+    
+    echo -e "${YELLOW}正在强制重置 root 密码...${NC}"
+    echo -e "${CYAN}此操作将会重启 MySQL 服务${NC}"
+    
+    # 1. 停止 MySQL 服务
+    echo -e "${YELLOW}1. 停止 MySQL 服务...${NC}"
+    if sudo systemctl stop "${MYSQL_SERVICE}" 2>/dev/null; then
+        echo -e "${GREEN}✓ 服务已停止${NC}"
+    else
+        echo -e "${RED}✗ 停止服务失败${NC}"
+        return 1
+    fi
+    
+    sleep 2
+    
+    # 2. 以 skip-grant-tables 模式启动
+    echo -e "${YELLOW}2. 以跳过权限模式启动 MySQL...${NC}"
+    sudo mysqld_safe --skip-grant-tables --skip-networking &
+    local mysqld_pid=$!
+    
+    # 等待 MySQL 启动
+    echo -e "${CYAN}等待 MySQL 启动...${NC}"
+    local max_wait=30
+    local waited=0
+    while [ $waited -lt $max_wait ]; do
+        if mysql -u root -e "SELECT 1;" 2>/dev/null | grep -q "1"; then
+            echo -e "${GREEN}✓ MySQL 已启动${NC}"
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    
+    if [ $waited -ge $max_wait ]; then
+        echo -e "${RED}✗ MySQL 启动超时${NC}"
+        sudo pkill -9 mysqld 2>/dev/null
+        sudo systemctl start "${MYSQL_SERVICE}" 2>/dev/null
+        return 1
+    fi
+    
+    # 3. 重置密码
+    echo -e "${YELLOW}3. 重置密码...${NC}"
+    local reset_sql="
+    FLUSH PRIVILEGES;
+    ALTER USER '${ROOT_USER}'@'localhost' IDENTIFIED BY '${new_password}';
+    FLUSH PRIVILEGES;
+    "
+    
+    if echo "$reset_sql" | mysql -u root 2>/dev/null; then
+        echo -e "${GREEN}✓ 密码重置成功${NC}"
+    else
+        echo -e "${RED}✗ 密码重置失败${NC}"
+        sudo pkill -9 mysqld 2>/dev/null
+        sudo systemctl start "${MYSQL_SERVICE}" 2>/dev/null
+        return 1
+    fi
+    
+    # 4. 停止 skip-grant-tables 模式的 MySQL
+    echo -e "${YELLOW}4. 停止临时 MySQL 进程...${NC}"
+    sudo pkill mysqld 2>/dev/null
+    sleep 2
+    
+    # 5. 正常启动 MySQL
+    echo -e "${YELLOW}5. 正常启动 MySQL 服务...${NC}"
+    if sudo systemctl start "${MYSQL_SERVICE}" 2>/dev/null; then
+        echo -e "${GREEN}✓ MySQL 服务已正常启动${NC}"
+        sleep 2
+        return 0
+    else
+        echo -e "${RED}✗ 启动 MySQL 服务失败${NC}"
+        return 1
+    fi
+}
+
+#==========================================================
 # 函数：下载 SQL 文件（支持 Basic Auth）
 #==========================================================
 download_sql_file() {
@@ -839,6 +918,16 @@ menu_change_root_password() {
     echo -e "${GREEN}  修改本地 root 密码${NC}"
     echo -e "${GREEN}============================================${NC}\n"
     
+    echo -e "${CYAN}是否记得当前的 root 密码？${NC}"
+    read -p "[Y/n]: " know_password
+    know_password=${know_password:-yes}
+    
+    local use_force_reset=false
+    if [[ ! "$know_password" =~ ^[Yy]|^[Yy][Ee][Ss]$ ]]; then
+        echo -e "${YELLOW}将使用强制重置模式（无需当前密码）${NC}"
+        use_force_reset=true
+    fi
+    
     echo -e "${YELLOW}请设置新的 root 密码:${NC}"
     echo -e "${CYAN}密码要求: 至少8位，必须包含数字和特殊符号(!@#\$%^&*-_=+)${NC}"
     
@@ -850,7 +939,21 @@ menu_change_root_password() {
     read -p "继续？[Y/n]: " confirm
     
     if [[ ! "$confirm" =~ ^[Nn]$ ]]; then
-        if change_root_password "$new_password"; then
+        local success=false
+        
+        if [ "$use_force_reset" = true ]; then
+            # 使用强制重置模式
+            if force_reset_root_password "$new_password"; then
+                success=true
+            fi
+        else
+            # 使用正常模式
+            if change_root_password "$new_password"; then
+                success=true
+            fi
+        fi
+        
+        if [ "$success" = true ]; then
             print_local_password_box "$new_password"
             
             # 保存密码到文件
