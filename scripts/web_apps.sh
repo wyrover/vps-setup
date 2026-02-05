@@ -447,6 +447,32 @@ install_phpmyadmin() {
     local blowfish_secret=$(generate_password 32)
     sed -i "s|\$cfg\['blowfish_secret'\] = ''|\$cfg['blowfish_secret'] = '${blowfish_secret}'|" config.inc.php
     
+    # 启用任意服务器连接（支持远程 MySQL/MariaDB）
+    cat >> config.inc.php << 'PMACONFIG'
+
+/* 允许连接到任意 MySQL/MariaDB 服务器 */
+$cfg['AllowArbitraryServer'] = true;
+
+/* 默认服务器配置（可选） */
+$cfg['Servers'][$i]['host'] = 'localhost';
+$cfg['Servers'][$i]['port'] = '';
+$cfg['Servers'][$i]['socket'] = '';
+$cfg['Servers'][$i]['auth_type'] = 'cookie';
+$cfg['Servers'][$i]['AllowNoPassword'] = false;
+
+/* MySQL SSL 连接支持（可选配置）
+ * 如需启用 SSL 连接到 MySQL，请取消注释以下配置并设置正确的证书路径
+ * 证书文件需要从 MySQL 服务器获取，通常位于 /var/lib/mysql/ 目录
+ */
+// $cfg['Servers'][$i]['ssl'] = true;
+// $cfg['Servers'][$i]['ssl_key'] = '/path/to/client-key.pem';
+// $cfg['Servers'][$i]['ssl_cert'] = '/path/to/client-cert.pem';
+// $cfg['Servers'][$i]['ssl_ca'] = '/path/to/ca-cert.pem';
+// $cfg['Servers'][$i]['ssl_ca_path'] = '';
+// $cfg['Servers'][$i]['ssl_ciphers'] = '';
+// $cfg['Servers'][$i]['ssl_verify'] = true;  // 设置为 false 可跳过证书验证（不推荐）
+PMACONFIG
+    
     mkdir -p tmp
     chown -R www-data:www-data "$install_dir"
     chmod -R 755 "$install_dir"
@@ -546,14 +572,57 @@ SSL 密钥: ${ssl_key}
 使用说明
 --------
 1. 访问时首先需要通过 Basic Auth 认证
-2. 然后使用 MariaDB/MySQL 数据库用户名密码登录
-3. 双重认证提高了安全性
+2. 登录界面会显示"服务器"输入框，可以输入：
+   - localhost (本地数据库)
+   - 远程服务器 IP 或域名 (如: 192.168.1.100 或 db.example.com)
+   - 带端口的服务器地址 (如: 192.168.1.100:3307)
+3. 输入数据库用户名和密码登录
+4. 支持连接多个不同的 MySQL/MariaDB 服务器
 
 重要提示
 --------
+- 已启用 AllowArbitraryServer，可连接任意 MySQL/MariaDB 服务器
 - 建议使用 Let's Encrypt 配置真实 SSL 证书
 - 定期更新 phpMyAdmin 到最新版本
 - 限制访问 IP 地址（可选）
+- 确保远程数据库允许此服务器的 IP 连接
+
+MySQL SSL 连接配置（可选）
+--------------------------
+如需通过 SSL 连接到 MySQL/MariaDB，需要完成以下步骤：
+
+1. MySQL 服务器端配置：
+   在 MySQL 服务器上启用 SSL（编辑 /etc/mysql/my.cnf 或 /etc/my.cnf）：
+   
+   [mysqld]
+   ssl-ca=/var/lib/mysql/ca-cert.pem
+   ssl-cert=/var/lib/mysql/server-cert.pem
+   ssl-key=/var/lib/mysql/server-key.pem
+   require_secure_transport=ON
+   
+   重启 MySQL 服务：systemctl restart mariadb
+
+2. 获取证书文件：
+   从 MySQL 服务器复制以下文件到 phpMyAdmin 服务器：
+   - ca-cert.pem (CA 证书)
+   - client-cert.pem (客户端证书)
+   - client-key.pem (客户端密钥)
+   
+   建议存放在：${install_dir}/ssl/
+
+3. 配置 phpMyAdmin：
+   编辑 ${install_dir}/config.inc.php，取消注释并修改 SSL 配置：
+   
+   \$cfg['Servers'][\$i]['ssl'] = true;
+   \$cfg['Servers'][\$i]['ssl_key'] = '${install_dir}/ssl/client-key.pem';
+   \$cfg['Servers'][\$i]['ssl_cert'] = '${install_dir}/ssl/client-cert.pem';
+   \$cfg['Servers'][\$i]['ssl_ca'] = '${install_dir}/ssl/ca-cert.pem';
+   \$cfg['Servers'][\$i]['ssl_verify'] = true;
+
+4. 设置证书权限：
+   chown www-data:www-data ${install_dir}/ssl/*.pem
+   chmod 600 ${install_dir}/ssl/*.pem
+
 
 管理命令
 --------
