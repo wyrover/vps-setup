@@ -459,18 +459,6 @@ $cfg['Servers'][$i]['port'] = '';
 $cfg['Servers'][$i]['socket'] = '';
 $cfg['Servers'][$i]['auth_type'] = 'cookie';
 $cfg['Servers'][$i]['AllowNoPassword'] = false;
-
-/* MySQL SSL 连接支持（可选配置）
- * 如需启用 SSL 连接到 MySQL，请取消注释以下配置并设置正确的证书路径
- * 证书文件需要从 MySQL 服务器获取，通常位于 /var/lib/mysql/ 目录
- */
-// $cfg['Servers'][$i]['ssl'] = true;
-// $cfg['Servers'][$i]['ssl_key'] = '/path/to/client-key.pem';
-// $cfg['Servers'][$i]['ssl_cert'] = '/path/to/client-cert.pem';
-// $cfg['Servers'][$i]['ssl_ca'] = '/path/to/ca-cert.pem';
-// $cfg['Servers'][$i]['ssl_ca_path'] = '';
-// $cfg['Servers'][$i]['ssl_ciphers'] = '';
-// $cfg['Servers'][$i]['ssl_verify'] = true;  // 设置为 false 可跳过证书验证（不推荐）
 PMACONFIG
     
     mkdir -p tmp
@@ -721,6 +709,40 @@ install_wordpress() {
     # 数据库配置
     echo ""
     print_info "数据库配置"
+    
+    # 询问数据库类型
+    echo ""
+    echo "选择数据库位置："
+    echo "  1) 本地数据库 (localhost)"
+    echo "  2) 远程数据库"
+    read -p "请选择 [1/2] (默认: 1): " db_location_choice
+    db_location_choice=${db_location_choice:-1}
+    
+    local db_host="localhost"
+    local create_database=true
+    
+    if [[ "$db_location_choice" == "2" ]]; then
+        create_database=false
+        echo ""
+        print_info "远程数据库配置"
+        read -p "数据库主机地址 (默认: 10.0.0.2): " db_host
+        db_host=${db_host:-10.0.0.2}
+        
+        read -p "数据库端口 (默认: 3306): " db_port
+        db_port=${db_port:-3306}
+        
+        # 如果端口不是 3306，添加到主机地址
+        if [ "$db_port" != "3306" ]; then
+            db_host="${db_host}:${db_port}"
+        fi
+        
+        print_warning "请确保远程数据库已创建并授权此服务器访问"
+    else
+        db_host="localhost"
+        print_info "将在本地创建数据库"
+    fi
+    
+    echo ""
     read -p "数据库名 (默认: ${db_name}): " custom_db_name
     db_name=${custom_db_name:-$db_name}
     
@@ -731,8 +753,14 @@ install_wordpress() {
     echo ""
     
     if [ -z "$db_pass" ]; then
-        db_pass=$(generate_password 16)
-        print_info "生成的密码: $db_pass"
+        if [ "$create_database" = true ]; then
+            db_pass=$(generate_password 16)
+            print_info "生成的密码: $db_pass"
+        else
+            print_error "远程数据库必须提供密码"
+            press_enter
+            return
+        fi
     fi
     
     echo ""
@@ -740,6 +768,7 @@ install_wordpress() {
     echo "  Web 服务器: ${WEB_SERVER}"
     echo "  域名: ${domain}"
     echo "  目录: ${install_dir}"
+    echo "  数据库主机: ${db_host}"
     echo "  数据库名: ${db_name}"
     echo "  数据库用户: ${db_user}"
     echo "  配置目录: ${SITES_AVAIL}"
@@ -752,10 +781,15 @@ install_wordpress() {
         return
     fi
     
-    # 创建数据库
+    # 创建数据库（仅本地）
     echo ""
-    print_info "[1/5] 创建数据库..."
-    create_mysql_db "$db_name" "$db_user" "$db_pass"
+    if [ "$create_database" = true ]; then
+        print_info "[1/5] 创建本地数据库..."
+        create_mysql_db "$db_name" "$db_user" "$db_pass"
+    else
+        print_info "[1/5] 跳过数据库创建（使用远程数据库）..."
+        print_warning "请确保远程数据库 ${db_name} 已存在并授权"
+    fi
     
     # 下载 WordPress
     print_info "[2/5] 下载 WordPress..."
@@ -774,6 +808,7 @@ install_wordpress() {
     sed -i "s/database_name_here/${db_name}/" wp-config.php
     sed -i "s/username_here/${db_user}/" wp-config.php
     sed -i "s/password_here/${db_pass}/" wp-config.php
+    sed -i "s/localhost/${db_host}/" wp-config.php
     
     # 生成安全密钥
     curl -s https://api.wordpress.org/secret-key/1.1/salt/ >> wp-config.php
@@ -862,6 +897,7 @@ Web 服务器: ${WEB_SERVER}
 
 数据库信息
 ----------
+数据库主机: ${db_host}
 数据库名: ${db_name}
 数据库用户: ${db_user}
 数据库密码: ${db_pass}
