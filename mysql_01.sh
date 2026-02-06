@@ -662,6 +662,32 @@ execute_sql() {
     fi
 }
 
+# 进入 MySQL 控制台
+enter_mysql_console() {
+    echo -e "${CYAN}======================================${NC}"
+    echo -e "${CYAN}        进入 MySQL 控制台${NC}"
+    echo -e "${CYAN}======================================${NC}"
+    echo ""
+    echo -e "${BLUE}连接信息：${NC}"
+    echo -e "  主机: ${YELLOW}$DB_HOST${NC}"
+    echo -e "  端口: ${YELLOW}$DB_PORT${NC}"
+    echo -e "  用户: ${YELLOW}$DB_USER${NC}"
+    [ -n "$DB_NAME" ] && echo -e "  数据库: ${YELLOW}$DB_NAME${NC}"
+    echo ""
+    echo -e "${YELLOW}提示: 输入 'exit' 或按 Ctrl+D 退出控制台${NC}"
+    echo ""
+    
+    # 进入 MySQL 控制台
+    if [ -n "$DB_NAME" ]; then
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -D "$DB_NAME"
+    else
+        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD"
+    fi
+    
+    echo ""
+    echo -e "${GREEN}✓ 已退出 MySQL 控制台${NC}"
+}
+
 # 备份数据库（增强版 - 先选择数据库）
 backup_database() {
     clear
@@ -2106,18 +2132,19 @@ main_menu() {
         echo " 4. 显示数据库列表"
         echo " 5. 选择数据库"
         echo " 6. 显示表列表和数据"
-        echo " 7. 执行 SQL 语句"
-        echo " 8. 导入 SQL 文件"
-        echo " 9. 备份数据库"
-        echo "10. 还原备份文件"
-        echo "11. 预览备份文件"
-        echo "12. 创建数据库"
-        echo "13. 删除数据库"
-        echo "14. 清理备份文件"
+        echo " 7. 进入 MySQL 控制台"
+        echo " 8. 执行 SQL 语句"
+        echo " 9. 导入 SQL 文件"
+        echo "10. 备份数据库"
+        echo "11. 还原备份文件"
+        echo "12. 预览备份文件"
+        echo "13. 创建数据库"
+        echo "14. 删除数据库"
+        echo "15. 清理备份文件"
         echo " 0. 退出"
         echo ""
         
-        read -p "请选择 [0-14]: " choice
+        read -p "请选择 [0-15]: " choice
         
         case $choice in
             1)
@@ -2145,34 +2172,37 @@ main_menu() {
                 read -p "按回车继续..."
                 ;;
             7)
+                enter_mysql_console
+                ;;
+            8)
                 execute_sql
                 read -p "按回车继续..."
                 ;;
-            8)
+            9)
                 import_sql_file
                 read -p "按回车继续..."
                 ;;
-            9)
+            10)
                 backup_database
                 read -p "按回车继续..."
                 ;;
-            10)
+            11)
                 restore_backup_menu
                 read -p "按回车继续..."
                 ;;
-            11)
+            12)
                 preview_backup
                 read -p "按回车继续..."
                 ;;
-            12)
+            13)
                 create_database
                 read -p "按回车继续..."
                 ;;
-            13)
+            14)
                 drop_database
                 read -p "按回车继续..."
                 ;;
-            14)
+            15)
                 cleanup_backups
                 read -p "按回车继续..."
                 ;;
