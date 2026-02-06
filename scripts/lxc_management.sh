@@ -182,17 +182,52 @@ setup_network_bridge() {
     
     check_root || return
     
-    print_info "配置 LXC 网络桥接 (10.0.0.1/24)..."
+    # 子网选择菜单
+    echo "请选择网络子网："
+    echo "  ${CYAN}1${NC}) 10.0.0.0/24 (默认)"
+    echo "  ${CYAN}2${NC}) 10.1.0.0/24"
+    echo "  ${CYAN}3${NC}) 10.2.0.0/24"
+    echo "  ${CYAN}4${NC}) 10.3.0.0/24"
+    echo ""
+    read -p "请选择 [1-4] (默认: 1): " subnet_choice
+    subnet_choice=${subnet_choice:-1}
+    
+    # 根据选择设置子网参数
+    case $subnet_choice in
+        1)
+            SUBNET_OCTET="0"
+            SUBNET_DESC="10.0.0.0/24"
+            ;;
+        2)
+            SUBNET_OCTET="1"
+            SUBNET_DESC="10.1.0.0/24"
+            ;;
+        3)
+            SUBNET_OCTET="2"
+            SUBNET_DESC="10.2.0.0/24"
+            ;;
+        4)
+            SUBNET_OCTET="3"
+            SUBNET_DESC="10.3.0.0/24"
+            ;;
+        *)
+            print_error "无效选择，未进行配置"
+            press_enter
+            return
+            ;;
+    esac
+    
+    print_info "配置 LXC 网络桥接 (${SUBNET_DESC})..."
     echo ""
     
     # 创建 LXC 网络配置
-    cat > /etc/default/lxc-net << 'EOF'
+    cat > /etc/default/lxc-net <<EOF
 USE_LXC_BRIDGE="true"
 LXC_BRIDGE="lxcbr0"
-LXC_ADDR="10.0.0.1"
+LXC_ADDR="10.${SUBNET_OCTET}.0.1"
 LXC_NETMASK="255.255.255.0"
-LXC_NETWORK="10.0.0.0/24"
-LXC_DHCP_RANGE="10.0.0.100,10.0.0.254"
+LXC_NETWORK="10.${SUBNET_OCTET}.0.0/24"
+LXC_DHCP_RANGE="10.${SUBNET_OCTET}.0.100,10.${SUBNET_OCTET}.0.254"
 LXC_DHCP_MAX="253"
 LXC_DHCP_CONFILE="/etc/lxc/dnsmasq.conf"
 EOF
@@ -216,7 +251,7 @@ EOF
     local IFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
     print_info "在网卡 ${IFACE} 上配置 NAT..."
     
-    iptables -t nat -A POSTROUTING -s 10.0.0.0/24 -o "$IFACE" -j MASQUERADE
+    iptables -t nat -A POSTROUTING -s 10.${SUBNET_OCTET}.0.0/24 -o "$IFACE" -j MASQUERADE
     iptables -A FORWARD -i lxcbr0 -o "$IFACE" -j ACCEPT
     iptables -A FORWARD -i "$IFACE" -o lxcbr0 -m state --state RELATED,ESTABLISHED -j ACCEPT
     
@@ -227,9 +262,9 @@ EOF
     echo ""
     print_info "网络信息："
     echo "  桥接接口: lxcbr0"
-    echo "  桥接地址: 10.0.0.1/24"
-    echo "  DHCP 范围: 10.0.0.100-254"
-    echo "  静态 IP: 10.0.0.2-99 (可用)"
+    echo "  桥接地址: 10.${SUBNET_OCTET}.0.1/24"
+    echo "  DHCP 范围: 10.${SUBNET_OCTET}.0.100-254"
+    echo "  静态 IP: 10.${SUBNET_OCTET}.0.2-99 (可用)"
     
     press_enter
 }
