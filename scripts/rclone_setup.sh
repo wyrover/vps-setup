@@ -72,7 +72,7 @@ check_config_exists() {
 # 获取配置的远程存储列表
 get_remote_list() {
     if check_config_exists; then
-        grep "^\[" "$RCLONE_CONFIG_FILE" | tr -d '[]' | grep -v "^$"
+        grep "^\[" "$RCLONE_CONFIG_FILE" | tr -d '[]' | tr -d '[:cntrl:]' | grep -v "^$"
     else
         echo ""
     fi
@@ -312,8 +312,8 @@ mount_remote() {
     read -p "选择要挂载的远程存储 [1-$((i-1))]: " choice
     
     local selected_remote="${remote_map[$choice]}"
-    # 过滤掉 Windows 风格的回车符
-    selected_remote=$(echo "$selected_remote" | tr -d '\r')
+    # 过滤掉所有控制字符（包括回车、换行等不可见字符）
+    selected_remote=$(echo "$selected_remote" | tr -d '[:cntrl:]')
     
     if [ -z "$selected_remote" ]; then
         print_error "无效选择"
@@ -328,15 +328,23 @@ mount_remote() {
     
     read -p "远程路径 (默认: /): " remote_path
     remote_path=${remote_path:-/}
+    # 过滤所有控制字符
+    remote_path=$(echo "$remote_path" | tr -d '[:cntrl:]')
     
     read -p "本地挂载点 (默认: ${RCLONE_MOUNT_BASE}/${selected_remote}): " mount_point
     mount_point=${mount_point:-${RCLONE_MOUNT_BASE}/${selected_remote}}
+    # 过滤所有控制字符
+    mount_point=$(echo "$mount_point" | tr -d '[:cntrl:]')
     
     read -p "缓存目录 (默认: ${RCLONE_CACHE_DIR}/${selected_remote}): " cache_dir
     cache_dir=${cache_dir:-${RCLONE_CACHE_DIR}/${selected_remote}}
+    # 过滤所有控制字符
+    cache_dir=$(echo "$cache_dir" | tr -d '[:cntrl:]')
     
     read -p "缓存大小 (默认: 512M): " cache_size
     cache_size=${cache_size:-512M}
+    # 过滤所有控制字符
+    cache_size=$(echo "$cache_size" | tr -d '[:cntrl:]')
     
     # 获取 www-data 用户 UID/GID
     local www_uid=$(id -u www-data 2>/dev/null || echo "33")
