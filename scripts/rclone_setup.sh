@@ -303,6 +303,8 @@ mount_remote() {
     local i=1
     declare -A remote_map
     while IFS= read -r remote; do
+        # 过滤掉所有控制字符
+        remote=$(echo "$remote" | tr -d '[:cntrl:]')
         echo "$i. $remote"
         remote_map[$i]="$remote"
         ((i++))
@@ -320,6 +322,11 @@ mount_remote() {
         read -p "按 Enter 键继续..."
         return
     fi
+    
+    # 调试输出：显示过滤后的远程名称
+    echo ""
+    print_info "已选择远程存储: '$selected_remote' (长度: ${#selected_remote})"
+    echo ""
     
     # 配置挂载参数
     echo ""
