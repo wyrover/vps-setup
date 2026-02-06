@@ -209,7 +209,7 @@ setup_mysql_connection() {
         return 1
     fi
     
-    if mysql --defaults-extra-file="$temp_config" -e "STATUS" >/dev/null 2>&1; then
+    if mysql --defaults-file="$temp_config" -e "STATUS" >/dev/null 2>&1; then
         log_info "${GREEN}✓ MySQL connection successful!${NC}"
         mysql_configured=true
         rm -f "$temp_config"
@@ -323,13 +323,13 @@ fi
 create_mysql_config
 
 # Check MySQL connection
-if ! mysql --defaults-extra-file="\${MYSQL_CONFIG}" -e "STATUS" >/dev/null 2>&1; then
+if ! mysql --defaults-file="\${MYSQL_CONFIG}" -e "STATUS" >/dev/null 2>&1; then
     log_msg "Error: Cannot connect to MySQL server."
     exit 1
 fi
 
 # Get database list
-databases=\$(mysql --defaults-extra-file="\${MYSQL_CONFIG}" -e "SHOW DATABASES;" | grep -E -v "Database|information_schema|mysql|test|performance_schema|sys")
+databases=\$(mysql --defaults-file="\${MYSQL_CONFIG}" -e "SHOW DATABASES;" | grep -E -v "Database|information_schema|mysql|test|performance_schema|sys")
 
 for db in \$databases; do
     log_msg "Processing database: \${db}"
@@ -338,7 +338,7 @@ for db in \$databases; do
     filepath="\${BACKUP_DIR}/\${filename}"
 
     # Backup
-    mysqldump --defaults-extra-file="\${MYSQL_CONFIG}" \\
+    mysqldump --defaults-file="\${MYSQL_CONFIG}" \\
         --databases "\${db}" \\
         --single-transaction --quick --routines --triggers --events --hex-blob \\
         --default-character-set=utf8mb4 \\
@@ -682,7 +682,7 @@ restore_mysql() {
     local mysql_config="/tmp/.mysql_restore_$$.cnf"
     create_mysql_config "$mysql_config" "$DB_HOST" "$DB_PORT" "$DB_USER" "$DB_PASS"
     
-    MYSQL_CMD="mysql --defaults-extra-file=$mysql_config"
+    MYSQL_CMD="mysql --defaults-file=$mysql_config"
     
     # Drop 数据库
     log_info "Dropping database ${TARGET_DB}..."
