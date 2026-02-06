@@ -312,6 +312,9 @@ mount_remote() {
     read -p "选择要挂载的远程存储 [1-$((i-1))]: " choice
     
     local selected_remote="${remote_map[$choice]}"
+    # 过滤掉 Windows 风格的回车符
+    selected_remote=$(echo "$selected_remote" | tr -d '\r')
+    
     if [ -z "$selected_remote" ]; then
         print_error "无效选择"
         read -p "按 Enter 键继续..."
