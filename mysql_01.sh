@@ -1299,7 +1299,7 @@ download_via_http() {
     echo ""
     read -p "是否需要 HTTP 认证？(yes/no): " need_auth
     
-    local wget_opts=""
+    local curl_opts="-L"
     local http_user=""
     local http_pass=""
     
@@ -1336,7 +1336,7 @@ download_via_http() {
             echo ""
         fi
         
-        wget_opts="--user=$http_user --password=$http_pass"
+        curl_opts="$curl_opts -u $http_user:$http_pass"
     fi
     
     echo ""
@@ -1345,17 +1345,14 @@ download_via_http() {
     echo -e "  保存为: ${CYAN}$local_filename${NC}"
     echo ""
     
-    if wget $wget_opts -O "$local_filename" "$backup_url" 2>&1 | grep -v "^$"; then
-        echo ""
-        echo -e "${GREEN}✓ 下载成功！${NC}"
-        
-        # 如果使用了认证且下载成功，保存凭据
-        if [ "$need_auth" == "yes" ] && [ -n "$http_user" ]; then
+    if curl $curl_opts -o "$local_filename" "$backup_url" 2>&1; then
+        # 检查文件是否成功下载（文件存在且大小大于0）
+        if [ -f "$local_filename" ] && [ -s "$local_filename" ]; then
             echo ""
-            read -p "是否保存 HTTP 认证信息以便下次使用？(yes/no) [yes]: " save_creds
-            save_creds=${save_creds:-yes}
+            echo -e "${GREEN}✓ 下载成功！${NC}"
             
-            if [ "$save_creds" == "yes" ]; then
+            # 如果使用了认证且下载成功，自动保存凭据
+            if [ "$need_auth" == "yes" ] && [ -n "$http_user" ]; then
                 cat > "$HTTP_CREDS_FILE" <<EOF
 # MySQL Manager HTTP 认证凭据
 # 此文件由脚本自动生成和管理
@@ -1363,34 +1360,39 @@ HTTP_USERNAME="$http_user"
 HTTP_PASSWORD="$http_pass"
 EOF
                 chmod 600 "$HTTP_CREDS_FILE"
-                echo -e "${GREEN}✓ 认证信息已保存到: $HTTP_CREDS_FILE${NC}"
+                echo -e "${GREEN}✓ 认证信息已自动保存到: $HTTP_CREDS_FILE${NC}"
             fi
-        fi
-        
-        local file_size=$(ls -lh "$local_filename" | awk '{print $5}')
-        echo -e "  文件: ${CYAN}$local_filename${NC}"
-        echo -e "  大小: ${CYAN}$file_size${NC}"
-        echo ""
-        
-        if bzcat "$local_filename" > /dev/null 2>&1; then
-            echo -e "${GREEN}✓ 文件完整性验证通过${NC}"
-        else
-            echo -e "${RED}⚠ 警告：文件可能已损坏${NC}"
-            read -p "是否继续还原？(yes/no): " continue_restore
-            if [ "$continue_restore" != "yes" ]; then
-                rm -f "$local_filename"
-                echo -e "${YELLOW}已删除损坏的文件${NC}"
-                return 1
-            fi
-        fi
-        
-        echo ""
-        read -p "是否立即还原此备份？(yes/no): " restore_now
-        if [ "$restore_now" == "yes" ]; then
+            
+            local file_size=$(ls -lh "$local_filename" | awk '{print $5}')
+            echo -e "  文件: ${CYAN}$local_filename${NC}"
+            echo -e "  大小: ${CYAN}$file_size${NC}"
             echo ""
-            perform_restore "$local_filename"
+            
+            if bzcat "$local_filename" > /dev/null 2>&1; then
+                echo -e "${GREEN}✓ 文件完整性验证通过${NC}"
+            else
+                echo -e "${RED}⚠ 警告：文件可能已损坏${NC}"
+                read -p "是否继续还原？(yes/no): " continue_restore
+                if [ "$continue_restore" != "yes" ]; then
+                    rm -f "$local_filename"
+                    echo -e "${YELLOW}已删除损坏的文件${NC}"
+                    return 1
+                fi
+            fi
+            
+            echo ""
+            read -p "是否立即还原此备份？(yes/no): " restore_now
+            if [ "$restore_now" == "yes" ]; then
+                echo ""
+                perform_restore "$local_filename"
+            else
+                echo -e "${GREEN}备份文件已保存，可稍后通过菜单还原${NC}"
+            fi
         else
-            echo -e "${GREEN}备份文件已保存，可稍后通过菜单还原${NC}"
+            echo ""
+            echo -e "${RED}✗ 下载失败（文件为空或不存在）${NC}"
+            rm -f "$local_filename"
+            return 1
         fi
     else
         echo ""
