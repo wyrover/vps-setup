@@ -184,10 +184,10 @@ setup_network_bridge() {
     
     # 子网选择菜单
     echo "请选择网络子网："
-    echo "  ${CYAN}1${NC}) 10.0.0.0/24 (默认)"
-    echo "  ${CYAN}2${NC}) 10.1.0.0/24"
-    echo "  ${CYAN}3${NC}) 10.2.0.0/24"
-    echo "  ${CYAN}4${NC}) 10.3.0.0/24"
+    echo -e "  ${CYAN}1${NC}) 10.0.0.0/24 (默认)"
+    echo -e "  ${CYAN}2${NC}) 10.1.0.0/24"
+    echo -e "  ${CYAN}3${NC}) 10.2.0.0/24"
+    echo -e "  ${CYAN}4${NC}) 10.3.0.0/24"
     echo ""
     read -p "请选择 [1-4] (默认: 1): " subnet_choice
     subnet_choice=${subnet_choice:-1}
