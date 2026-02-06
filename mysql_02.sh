@@ -201,14 +201,23 @@ setup_mysql_connection() {
     local temp_config="/tmp/.mysql_test_$$.cnf"
     create_mysql_config "$temp_config" "$DB_HOST" "$DB_PORT" "$DB_USER" "$DB_PASS"
     
+    # 调试信息：显示配置文件路径
+    if [ -f "$temp_config" ]; then
+        log_info "MySQL config file created: ${CYAN}${temp_config}${NC}"
+    else
+        log_err "Failed to create MySQL config file: ${temp_config}"
+        return 1
+    fi
+    
     if mysql --defaults-extra-file="$temp_config" -e "STATUS" >/dev/null 2>&1; then
         log_info "${GREEN}✓ MySQL connection successful!${NC}"
         mysql_configured=true
-        #rm -f "$temp_config"
+        rm -f "$temp_config"
     else
         log_err "Failed to connect to MySQL server."
         log_err "Please check your credentials and try again."
-        #rm -f "$temp_config"
+        log_err "Config file preserved for debugging: ${temp_config}"
+        # 不删除配置文件，方便调试
         return 1
     fi
     
