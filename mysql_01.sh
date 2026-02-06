@@ -1296,14 +1296,21 @@ download_via_http() {
         fi
     fi
     
+    # 自动检测是否需要 HTTP 认证
     echo ""
-    read -p "是否需要 HTTP 认证？(yes/no): " need_auth
+    echo -e "${BLUE}正在检测是否需要 HTTP 认证...${NC}"
+    local http_code=$(curl -s -o /dev/null -w "%{http_code}" -L "$backup_url")
     
     local curl_opts="-L"
     local http_user=""
     local http_pass=""
+    local need_auth="no"
     
-    if [ "$need_auth" == "yes" ]; then
+    if [ "$http_code" == "401" ]; then
+        need_auth="yes"
+        echo -e "${YELLOW}检测到需要 HTTP 认证（HTTP 401）${NC}"
+        echo ""
+        
         # 尝试读取保存的凭据
         local saved_user=""
         local saved_pass=""
@@ -1316,7 +1323,6 @@ download_via_http() {
         
         # 如果有保存的凭据，显示并让用户确认
         if [ -n "$saved_user" ]; then
-            echo ""
             echo -e "${CYAN}检测到已保存的认证信息：${NC}"
             echo -e "  用户名: ${YELLOW}$saved_user${NC}"
             echo -e "  密码: ${YELLOW}********${NC}"
@@ -1337,6 +1343,8 @@ download_via_http() {
         fi
         
         curl_opts="$curl_opts -u $http_user:$http_pass"
+    else
+        echo -e "${GREEN}✓ 无需 HTTP 认证（HTTP $http_code）${NC}"
     fi
     
     echo ""
