@@ -53,6 +53,24 @@ generate_password() {
     < /dev/urandom tr -dc _A-Z-a-z-0-9 | head -c${1:-16}
 }
 
+# 创建 MySQL 配置文件（用于安全传递密码）
+create_mysql_config() {
+    local config_file="$1"
+    local host="$2"
+    local port="$3"
+    local user="$4"
+    local pass="$5"
+    
+    cat > "$config_file" <<EOF
+[client]
+host=${host}
+port=${port}
+user=${user}
+password=${pass}
+EOF
+    chmod 600 "$config_file"
+}
+
 # 交互式选择 rclone 远程配置
 select_rclone_remote() {
     # 所有交互界面输出到 stderr，只有最终结果返回到 stdout
@@ -178,16 +196,19 @@ setup_mysql_connection() {
     # 验证连接
     echo ""
     log_info "Testing MySQL connection..."
-    export MYSQL_PWD="${DB_PASS}"
     
-    if mysql -h"${DB_HOST}" -P"${DB_PORT}" -u"${DB_USER}" -e "STATUS" >/dev/null 2>&1; then
+    # 创建临时配置文件
+    local temp_config="/tmp/.mysql_test_$$.cnf"
+    create_mysql_config "$temp_config" "$DB_HOST" "$DB_PORT" "$DB_USER" "$DB_PASS"
+    
+    if mysql --defaults-extra-file="$temp_config" -e "STATUS" >/dev/null 2>&1; then
         log_info "${GREEN}✓ MySQL connection successful!${NC}"
         mysql_configured=true
-        unset MYSQL_PWD
+        #rm -f "$temp_config"
     else
         log_err "Failed to connect to MySQL server."
         log_err "Please check your credentials and try again."
-        unset MYSQL_PWD
+        #rm -f "$temp_config"
         return 1
     fi
     
@@ -245,9 +266,31 @@ DB_PASS="${DB_PASS}"
 RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME}"
 REMOTE_BACKUP="\${RCLONE_REMOTE_NAME}:/vps_backup/hostdare_001/sql"
 
+# MySQL config file
+MYSQL_CONFIG="/tmp/.mysql_backup_\$\$.cnf"
+
 log_msg() {
     echo "[\$(date '+%Y-%m-%d %H:%M:%S')] \$1" | tee -a "\${LOG_FILE}"
 }
+
+# Create MySQL config file
+create_mysql_config() {
+    cat > "\${MYSQL_CONFIG}" <<EOF_CONFIG
+[client]
+host=\${DB_HOST}
+port=\${DB_PORT}
+user=\${DB_USER}
+password=\${DB_PASS}
+EOF_CONFIG
+    chmod 600 "\${MYSQL_CONFIG}"
+}
+
+# Cleanup function
+cleanup() {
+    rm -f "\${MYSQL_CONFIG}"
+}
+
+trap cleanup EXIT
 
 mkdir -p "\${BACKUP_DIR}"
 mkdir -p /var/log/mysql_backup
@@ -267,16 +310,17 @@ if ! command -v bzip2 &> /dev/null; then
     fi
 fi
 
-export MYSQL_PWD="\${DB_PASS}"
+# Create MySQL config
+create_mysql_config
 
 # Check MySQL connection
-if ! mysql -h"\${DB_HOST}" -P"\${DB_PORT}" -u"\${DB_USER}" -e "STATUS" >/dev/null 2>&1; then
+if ! mysql --defaults-extra-file="\${MYSQL_CONFIG}" -e "STATUS" >/dev/null 2>&1; then
     log_msg "Error: Cannot connect to MySQL server."
     exit 1
 fi
 
 # Get database list
-databases=\$(mysql -h"\${DB_HOST}" -P"\${DB_PORT}" -u"\${DB_USER}" -e "SHOW DATABASES;" | grep -E -v "Database|information_schema|mysql|test|performance_schema|sys")
+databases=\$(mysql --defaults-extra-file="\${MYSQL_CONFIG}" -e "SHOW DATABASES;" | grep -E -v "Database|information_schema|mysql|test|performance_schema|sys")
 
 for db in \$databases; do
     log_msg "Processing database: \${db}"
@@ -285,7 +329,7 @@ for db in \$databases; do
     filepath="\${BACKUP_DIR}/\${filename}"
 
     # Backup
-    mysqldump -h"\${DB_HOST}" -P"\${DB_PORT}" -u"\${DB_USER}" \\
+    mysqldump --defaults-extra-file="\${MYSQL_CONFIG}" \\
         --databases "\${db}" \\
         --single-transaction --quick --routines --triggers --events --hex-blob \\
         --default-character-set=utf8mb4 \\
@@ -326,7 +370,6 @@ for db in \$databases; do
     fi
 done
 
-unset MYSQL_PWD
 log_msg "=== MySQL Backup Finished ==="
 exit 0
 SCRIPT_EOF
@@ -624,9 +667,13 @@ restore_mysql() {
         exit 0
     fi
     
+    
     # 执行操作
-    export MYSQL_PWD="${DB_PASS}"
-    MYSQL_CMD="mysql -h${DB_HOST} -P${DB_PORT} -u${DB_USER}"
+    # 创建临时配置文件
+    local mysql_config="/tmp/.mysql_restore_$$.cnf"
+    create_mysql_config "$mysql_config" "$DB_HOST" "$DB_PORT" "$DB_USER" "$DB_PASS"
+    
+    MYSQL_CMD="mysql --defaults-extra-file=$mysql_config"
     
     # Drop 数据库
     log_info "Dropping database ${TARGET_DB}..."
@@ -698,7 +745,7 @@ restore_mysql() {
     fi
     
     # 清理
-    unset MYSQL_PWD
+    rm -f "$mysql_config"
     rm -f "${LOCAL_FILE}"
     rmdir "${RESTORE_TEMP_DIR}" 2>/dev/null
     
