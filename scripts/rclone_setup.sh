@@ -69,11 +69,35 @@ check_config_exists() {
 }
 
 
+# 规范化配置文件格式（转换为 Unix 格式）
+normalize_config_file() {
+    if check_config_exists; then
+        # 检查是否包含 \r（Windows 格式）
+        if grep -q $'\r' "$RCLONE_CONFIG_FILE" 2>/dev/null; then
+            # 转换为 Unix 格式
+            if command -v dos2unix &> /dev/null; then
+                dos2unix "$RCLONE_CONFIG_FILE" 2>/dev/null
+            else
+                # 使用 sed 或 tr 转换
+                sed -i 's/\r$//' "$RCLONE_CONFIG_FILE" 2>/dev/null || {
+                    tr -d '\r' < "$RCLONE_CONFIG_FILE" > "${RCLONE_CONFIG_FILE}.tmp" && \
+                    mv "${RCLONE_CONFIG_FILE}.tmp" "$RCLONE_CONFIG_FILE"
+                }
+            fi
+            return 0  # 已转换
+        fi
+    fi
+    return 1  # 无需转换或文件不存在
+}
+
+
 # 获取配置的远程存储列表
 get_remote_list() {
     if check_config_exists; then
-        # 只过滤 \r，保留 \n 以便正确分隔多个远程配置
-        grep "^\[" "$RCLONE_CONFIG_FILE" | tr -d '[]' | tr -d '\r' | grep -v "^$"
+        # 确保配置文件是 Unix 格式
+        normalize_config_file
+        # 读取远程配置名称
+        grep "^\[" "$RCLONE_CONFIG_FILE" | tr -d '[]' | grep -v "^$"
     else
         echo ""
     fi
@@ -240,8 +264,20 @@ setup_rclone_config() {
         return 1
     fi
     
+    
     # 写入配置文件
     echo "$config_content" > "$RCLONE_CONFIG_FILE"
+    
+    # 转换为 Unix 格式（LF），防止 Windows 格式（CRLF）导致的问题
+    if command -v dos2unix &> /dev/null; then
+        dos2unix "$RCLONE_CONFIG_FILE" 2>/dev/null
+        print_success "已转换为 Unix 格式"
+    else
+        # 如果没有 dos2unix，使用 sed 或 tr 转换
+        sed -i 's/\r$//' "$RCLONE_CONFIG_FILE" 2>/dev/null || tr -d '\r' < "$RCLONE_CONFIG_FILE" > "${RCLONE_CONFIG_FILE}.tmp" && mv "${RCLONE_CONFIG_FILE}.tmp" "$RCLONE_CONFIG_FILE"
+        print_success "已清理换行符格式"
+    fi
+    
     chmod 600 "$RCLONE_CONFIG_FILE"
     
     print_success "配置文件已保存"
@@ -304,8 +340,9 @@ mount_remote() {
     local i=1
     declare -A remote_map
     while IFS= read -r remote; do
-        # 只过滤 \r，保留正常的文本结构
-        remote=$(echo "$remote" | tr -d '\r')
+        # 配置文件已被规范化，只需简单清理可能的空白字符
+        remote=$(echo "$remote" | xargs)
+        [ -z "$remote" ] && continue
         echo "$i. $remote"
         remote_map[$i]="$remote"
         ((i++))
@@ -315,19 +352,12 @@ mount_remote() {
     read -p "选择要挂载的远程存储 [1-$((i-1))]: " choice
     
     local selected_remote="${remote_map[$choice]}"
-    # 只过滤 \r 和 \t，保留正常字符
-    selected_remote=$(echo "$selected_remote" | tr -d '\r\t')
     
     if [ -z "$selected_remote" ]; then
         print_error "无效选择"
         read -p "按 Enter 键继续..."
         return
     fi
-    
-    # 调试输出：显示过滤后的远程名称
-    echo ""
-    print_info "已选择远程存储: '$selected_remote' (长度: ${#selected_remote})"
-    echo ""
     
     # 配置挂载参数
     echo ""
@@ -336,23 +366,15 @@ mount_remote() {
     
     read -p "远程路径 (默认: /): " remote_path
     remote_path=${remote_path:-/}
-    # 只过滤 \r 和 \t
-    remote_path=$(echo "$remote_path" | tr -d '\r\t')
     
     read -p "本地挂载点 (默认: ${RCLONE_MOUNT_BASE}/${selected_remote}): " mount_point
     mount_point=${mount_point:-${RCLONE_MOUNT_BASE}/${selected_remote}}
-    # 只过滤 \r 和 \t
-    mount_point=$(echo "$mount_point" | tr -d '\r\t')
     
     read -p "缓存目录 (默认: ${RCLONE_CACHE_DIR}/${selected_remote}): " cache_dir
     cache_dir=${cache_dir:-${RCLONE_CACHE_DIR}/${selected_remote}}
-    # 只过滤 \r 和 \t
-    cache_dir=$(echo "$cache_dir" | tr -d '\r\t')
     
     read -p "缓存大小 (默认: 512M): " cache_size
     cache_size=${cache_size:-512M}
-    # 只过滤 \r 和 \t
-    cache_size=$(echo "$cache_size" | tr -d '\r\t')
     
     # 获取 www-data 用户 UID/GID
     local www_uid=$(id -u www-data 2>/dev/null || echo "33")
