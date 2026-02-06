@@ -14,6 +14,7 @@ NC='\033[0m' # 无颜色
 
 # 配置文件路径
 CONFIG_FILE="$HOME/.mysql_manager.conf"
+HTTP_CREDS_FILE="$HOME/.mysql_manager_http_creds.conf"
 CURRENT_PROFILE=""
 
 # 默认连接参数
@@ -645,21 +646,6 @@ show_tables() {
     echo -e "${BLUE}========================================${NC}"
     echo -e "${GREEN}✓ 完成！已显示 $processed 张表的数据${NC}"
     echo -e "${BLUE}========================================${NC}"
-}
-
-# 执行 SQL 语句
-execute_sql() {
-    echo -e "${YELLOW}请输入 SQL 语句（输入 'exit' 返回）：${NC}"
-    read -p "SQL> " sql
-    if [ "$sql" == "exit" ] || [ -z "$sql" ]; then
-        return
-    fi
-    
-    if [ -n "$DB_NAME" ]; then
-        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -D "$DB_NAME" -e "$sql" 2>/dev/null
-    else
-        mysql -h "$DB_HOST" -P "$DB_PORT" -u "$DB_USER" -p"$DB_PASSWORD" -e "$sql" 2>/dev/null
-    fi
 }
 
 # 进入 MySQL 控制台
@@ -1314,10 +1300,42 @@ download_via_http() {
     read -p "是否需要 HTTP 认证？(yes/no): " need_auth
     
     local wget_opts=""
+    local http_user=""
+    local http_pass=""
+    
     if [ "$need_auth" == "yes" ]; then
-        read -p "用户名: " http_user
-        read -sp "密码: " http_pass
-        echo ""
+        # 尝试读取保存的凭据
+        local saved_user=""
+        local saved_pass=""
+        
+        if [ -f "$HTTP_CREDS_FILE" ]; then
+            source "$HTTP_CREDS_FILE" 2>/dev/null
+            saved_user="$HTTP_USERNAME"
+            saved_pass="$HTTP_PASSWORD"
+        fi
+        
+        # 如果有保存的凭据，显示并让用户确认
+        if [ -n "$saved_user" ]; then
+            echo ""
+            echo -e "${CYAN}检测到已保存的认证信息：${NC}"
+            echo -e "  用户名: ${YELLOW}$saved_user${NC}"
+            echo -e "  密码: ${YELLOW}********${NC}"
+            echo ""
+            echo -e "${YELLOW}提示: 直接回车使用默认值，输入新值则覆盖${NC}"
+            echo ""
+            
+            read -p "用户名 [$saved_user]: " http_user
+            http_user=${http_user:-$saved_user}
+            
+            read -sp "密码 [使用已保存]: " http_pass
+            echo ""
+            http_pass=${http_pass:-$saved_pass}
+        else
+            read -p "用户名: " http_user
+            read -sp "密码: " http_pass
+            echo ""
+        fi
+        
         wget_opts="--user=$http_user --password=$http_pass"
     fi
     
@@ -1330,6 +1348,24 @@ download_via_http() {
     if wget $wget_opts -O "$local_filename" "$backup_url" 2>&1 | grep -v "^$"; then
         echo ""
         echo -e "${GREEN}✓ 下载成功！${NC}"
+        
+        # 如果使用了认证且下载成功，保存凭据
+        if [ "$need_auth" == "yes" ] && [ -n "$http_user" ]; then
+            echo ""
+            read -p "是否保存 HTTP 认证信息以便下次使用？(yes/no) [yes]: " save_creds
+            save_creds=${save_creds:-yes}
+            
+            if [ "$save_creds" == "yes" ]; then
+                cat > "$HTTP_CREDS_FILE" <<EOF
+# MySQL Manager HTTP 认证凭据
+# 此文件由脚本自动生成和管理
+HTTP_USERNAME="$http_user"
+HTTP_PASSWORD="$http_pass"
+EOF
+                chmod 600 "$HTTP_CREDS_FILE"
+                echo -e "${GREEN}✓ 认证信息已保存到: $HTTP_CREDS_FILE${NC}"
+            fi
+        fi
         
         local file_size=$(ls -lh "$local_filename" | awk '{print $5}')
         echo -e "  文件: ${CYAN}$local_filename${NC}"
@@ -2133,18 +2169,17 @@ main_menu() {
         echo " 5. 选择数据库"
         echo " 6. 显示表列表和数据"
         echo " 7. 进入 MySQL 控制台"
-        echo " 8. 执行 SQL 语句"
-        echo " 9. 导入 SQL 文件"
-        echo "10. 备份数据库"
-        echo "11. 还原备份文件"
-        echo "12. 预览备份文件"
-        echo "13. 创建数据库"
-        echo "14. 删除数据库"
-        echo "15. 清理备份文件"
+        echo " 8. 导入 SQL 文件"
+        echo " 9. 备份数据库"
+        echo "10. 还原备份文件"
+        echo "11. 预览备份文件"
+        echo "12. 创建数据库"
+        echo "13. 删除数据库"
+        echo "14. 清理备份文件"
         echo " 0. 退出"
         echo ""
         
-        read -p "请选择 [0-15]: " choice
+        read -p "请选择 [0-14]: " choice
         
         case $choice in
             1)
@@ -2175,34 +2210,30 @@ main_menu() {
                 enter_mysql_console
                 ;;
             8)
-                execute_sql
-                read -p "按回车继续..."
-                ;;
-            9)
                 import_sql_file
                 read -p "按回车继续..."
                 ;;
-            10)
+            9)
                 backup_database
                 read -p "按回车继续..."
                 ;;
-            11)
+            10)
                 restore_backup_menu
                 read -p "按回车继续..."
                 ;;
-            12)
+            11)
                 preview_backup
                 read -p "按回车继续..."
                 ;;
-            13)
+            12)
                 create_database
                 read -p "按回车继续..."
                 ;;
-            14)
+            13)
                 drop_database
                 read -p "按回车继续..."
                 ;;
-            15)
+            14)
                 cleanup_backups
                 read -p "按回车继续..."
                 ;;
