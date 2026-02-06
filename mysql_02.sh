@@ -7,7 +7,14 @@
 # =================配置区域=================
 
 # 脚本所在目录
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 处理通过 curl | bash 远程执行的情况
+if [[ "${BASH_SOURCE[0]}" == *"/dev/fd/"* ]] || [[ "${BASH_SOURCE[0]}" == "/dev/fd/"* ]]; then
+    # 通过 curl 或进程替换执行，使用当前目录
+    SCRIPT_DIR="$(pwd)"
+else
+    # 本地执行，使用脚本实际路径
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+fi
 
 # MySQL 连接信息（将在脚本启动时交互式设置）
 DB_HOST=""
