@@ -580,8 +580,8 @@ set_static_ip() {
         return
     fi
     
-    # 提取子网标识（第三个八位组）
-    local SUBNET_OCTET=$(echo "$BRIDGE_IP" | cut -d'.' -f3)
+    # 提取子网标识（第二个八位组）
+    local SUBNET_OCTET=$(echo "$BRIDGE_IP" | cut -d'.' -f2)
     
     # 验证检测到的 IP 格式
     if [[ ! "$BRIDGE_IP" =~ ^10\.[0-3]\.0\.1$ ]]; then
