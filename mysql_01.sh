@@ -1424,12 +1424,14 @@ EOF
     eval curl -L "$auth_param" -o "\"$local_filename\"" "\"$backup_url\""
     
     if [ $? -eq 0 ]; then
-        echo ""
-        echo -e "${GREEN}✓ 下载成功！${NC}"
-        
-        # 如果使用了认证且下载成功，自动保存凭据
-        if [ "$need_auth" == "yes" ] && [ -n "$http_user" ]; then
-            cat > "$HTTP_CREDS_FILE" <<EOF
+        # Check if file exists and has size
+        if [ -f "$local_filename" ] && [ -s "$local_filename" ]; then
+            echo ""
+            echo -e "${GREEN}✓ 下载成功！${NC}"
+            
+            # 如果使用了认证且下载成功，自动保存凭据
+            if [ "$need_auth" == "yes" ] && [ -n "$http_user" ]; then
+                cat > "$HTTP_CREDS_FILE" <<EOF
 # MySQL Manager HTTP 认证凭据
 # 此文件由脚本自动生成和管理
 HTTP_USERNAME="$http_user"
