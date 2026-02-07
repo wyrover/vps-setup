@@ -35,6 +35,9 @@ DATE_SUFFIX=$(date +%Y%m%d_%H%M%S)
 # 云端保留天数
 REMOTE_RETENTION_DAYS="7d"
 
+# VPS 实例名称（用于备份路径）
+VPS_INSTANCE_NAME=""
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -333,7 +336,7 @@ DB_PASS="${DB_PASS}"
 
 # rclone remote configuration
 RCLONE_REMOTE_NAME="${rclone_remote}"
-REMOTE_BACKUP="${RCLONE_REMOTE_NAME}:/vps_backup/hostdare_001/sql"
+REMOTE_BACKUP="${RCLONE_REMOTE_NAME}:/vps_backup/${VPS_INSTANCE_NAME}/sql"
 
 # MySQL config file (stored in user home for persistence)
 MYSQL_CONFIG="$HOME/.mysql_backup.cnf"
@@ -519,6 +522,9 @@ backup_mysql() {
         return
     fi
     
+    # 配置 VPS 实例名
+    setup_vps_instance
+    
     # Step 1: 选择远程网盘
     log_info "Step 1: Select rclone remote for backups"
     RCLONE_REMOTE_NAME=$(select_rclone_remote)
@@ -630,6 +636,9 @@ restore_mysql() {
         return
     fi
     
+    # 配置 VPS 实例名
+    setup_vps_instance
+    
     # 确定 rclone 远程网盘名称
     if [ -t 0 ]; then
         RCLONE_REMOTE_NAME=$(select_rclone_remote)
@@ -638,7 +647,7 @@ restore_mysql() {
     fi
     
     # rclone 远程目标路径
-    REMOTE_BACKUP="${RCLONE_REMOTE_NAME}:/vps_backup/hostdare_001/sql"
+    REMOTE_BACKUP="${RCLONE_REMOTE_NAME}:/vps_backup/${VPS_INSTANCE_NAME}/sql"
     
     # 依赖检查
     for cmd in rclone mysql bzip2 grep; do
@@ -881,6 +890,9 @@ setup_cron_backup() {
         return
     fi
     
+    # 配置 VPS 实例名
+    setup_vps_instance
+    
     # 选择远程网盘
     log_info "Step 1: Select rclone remote for scheduled backups"
     RCLONE_REMOTE_NAME=$(select_rclone_remote)
@@ -951,6 +963,9 @@ backup_system_config() {
     echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
     echo ""
     
+    # 配置 VPS 实例名
+    setup_vps_instance
+    
     # Step 1: 选择远程网盘
     log_info "Step 1: Select rclone remote for backups"
     RCLONE_REMOTE_NAME=$(select_rclone_remote)
@@ -976,6 +991,7 @@ SCRIPT_HEADER
     # 添加远程配置
     cat >> "${BACKUP_SCRIPT}" << SCRIPT_CONFIG
 RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME}"
+VPS_INSTANCE_NAME="${VPS_INSTANCE_NAME}"
 
 SCRIPT_CONFIG
 
@@ -988,7 +1004,7 @@ LOG_DIR="/var/log/system_backup"
 SYSTEM_LOG_FILE="/var/log/system_backup/backup_system.log"
 EXCLUDE_FILE="${SCRIPT_DIR}/rclone-sync-exclude.txt"
 
-REMOTE_PATH="/vps_backup/hostdare_001"
+REMOTE_PATH="/vps_backup/${VPS_INSTANCE_NAME}"
 REMOTE_FULL="${RCLONE_REMOTE_NAME}:${REMOTE_PATH}"
 
 LOG_RETENTION_DAYS=7
