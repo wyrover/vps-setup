@@ -1296,10 +1296,10 @@ download_via_http() {
         fi
     fi
     
-    # 自动检测是否需要 HTTP 认证
+    # 自动检测是否需要 HTTP 认证（禁用缓存）
     echo ""
     echo -e "${BLUE}正在检测是否需要 HTTP 认证...${NC}"
-    local http_code=$(curl -s -o /dev/null -w "%{http_code}" -L "$backup_url")
+    local http_code=$(curl -s -o /dev/null -w "%{http_code}" -L -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$backup_url")
     
     local curl_opts="-L"
     local http_user=""
@@ -1342,7 +1342,7 @@ download_via_http() {
             echo ""
         fi
         
-        curl_opts="$curl_opts -u $http_user:$http_pass"
+        curl_opts="$curl_opts -u \"$http_user:$http_pass\""
     else
         echo -e "${GREEN}✓ 无需 HTTP 认证（HTTP $http_code）${NC}"
     fi
@@ -1497,7 +1497,7 @@ restore_remote_backup() {
     
     echo -e "${YELLOW}支持的传输协议：${NC}"
     echo "  1. SCP/SFTP (SSH)"
-    echo "  2. HTTP/HTTPS (wget)"
+    echo "  2. HTTP/HTTPS (curl)"
     echo "  3. FTP"
     echo "  0. 返回"
     echo ""
