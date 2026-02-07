@@ -171,6 +171,9 @@ check_and_install_rclone() {
 # 检查 MySQL 连接配置是否已完成
 mysql_configured=false
 
+# 持久化配置文件路径
+MYSQL_CONFIG="$HOME/.mysql_backup.cnf"
+
 # 交互式配置 MySQL 连接信息
 setup_mysql_connection() {
     # 如果已经配置过，跳过
@@ -184,47 +187,110 @@ setup_mysql_connection() {
     echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
     echo ""
     
+    # 尝试从持久化配置文件读取现有配置
+    local saved_host=""
+    local saved_port=""
+    local saved_user=""
+    local saved_pass=""
+    
+    if [ -f "$MYSQL_CONFIG" ]; then
+        log_info "Found existing configuration: ${CYAN}${MYSQL_CONFIG}${NC}"
+        saved_host=$(grep "^host=" "$MYSQL_CONFIG" 2>/dev/null | cut -d'=' -f2)
+        saved_port=$(grep "^port=" "$MYSQL_CONFIG" 2>/dev/null | cut -d'=' -f2)
+        saved_user=$(grep "^user=" "$MYSQL_CONFIG" 2>/dev/null | cut -d'=' -f2)
+        saved_pass=$(grep "^password=" "$MYSQL_CONFIG" 2>/dev/null | cut -d'=' -f2)
+        
+        if [ -n "$saved_host" ] && [ -n "$saved_user" ]; then
+            echo ""
+            log_info "Saved configuration:"
+            echo "  Host: ${CYAN}${saved_host}${NC}"
+            echo "  Port: ${CYAN}${saved_port}${NC}"
+            echo "  User: ${CYAN}${saved_user}${NC}"
+            echo ""
+            read -p "Use saved configuration? (yes/no) [default: yes]: " use_saved
+            use_saved=${use_saved:-yes}
+            
+            if [ "$use_saved" = "yes" ]; then
+                DB_HOST="$saved_host"
+                DB_PORT="$saved_port"
+                DB_USER="$saved_user"
+                DB_PASS="$saved_pass"
+                
+                # 验证保存的配置
+                echo ""
+                log_info "Testing saved MySQL connection..."
+                if mysql --defaults-file="$MYSQL_CONFIG" -e "STATUS" >/dev/null 2>&1; then
+                    log_info "${GREEN}✓ MySQL connection successful!${NC}"
+                    mysql_configured=true
+                    return 0
+                else
+                    log_warn "Saved configuration failed to connect. Please re-enter credentials."
+                    echo ""
+                fi
+            fi
+        fi
+    fi
+    
+    # 设置默认值（使用保存的值或标准默认值）
+    local default_host="${saved_host:-127.0.0.1}"
+    local default_port="${saved_port:-3306}"
+    local default_user="${saved_user:-root}"
+    
     # MySQL Host
-    read -p "MySQL Host [default: 127.0.0.1]: " input_host
-    DB_HOST=${input_host:-"127.0.0.1"}
+    read -p "MySQL Host [default: ${default_host}]: " input_host
+    DB_HOST=${input_host:-"$default_host"}
     
     # MySQL Port
-    read -p "MySQL Port [default: 3306]: " input_port
-    DB_PORT=${input_port:-"3306"}
+    read -p "MySQL Port [default: ${default_port}]: " input_port
+    DB_PORT=${input_port:-"$default_port"}
     
     # MySQL User
-    read -p "MySQL User [default: root]: " input_user
-    DB_USER=${input_user:-"root"}
+    read -p "MySQL User [default: ${default_user}]: " input_user
+    DB_USER=${input_user:-"$default_user"}
     
     # MySQL Password
-    read -s -p "MySQL Password: " DB_PASS
-    echo ""
+    if [ -n "$saved_pass" ] && [ "$use_saved" != "yes" ]; then
+        read -s -p "MySQL Password [press Enter to use saved password]: " DB_PASS
+        echo ""
+        if [ -z "$DB_PASS" ]; then
+            DB_PASS="$saved_pass"
+            log_info "Using saved password."
+        fi
+    else
+        read -s -p "MySQL Password: " DB_PASS
+        echo ""
+    fi
     
-    # 验证连接
+    # 验证连接并保存配置
     echo ""
     log_info "Testing MySQL connection..."
     
-    # 创建临时配置文件
+    # 创建临时配置文件用于测试
     local temp_config="/tmp/.mysql_test_$$.cnf"
-    create_mysql_config "$temp_config" "$DB_HOST" "$DB_PORT" "$DB_USER" "$DB_PASS"
-    
-    # 调试信息：显示配置文件路径
-    if [ -f "$temp_config" ]; then
-        log_info "MySQL config file created: ${CYAN}${temp_config}${NC}"
-    else
-        log_err "Failed to create MySQL config file: ${temp_config}"
-        return 1
-    fi
+    cat > "$temp_config" <<EOF_CONFIG
+[client]
+host=$DB_HOST
+port=$DB_PORT
+user=$DB_USER
+password=$DB_PASS
+EOF_CONFIG
+    chmod 600 "$temp_config"
     
     if mysql --defaults-file="$temp_config" -e "STATUS" >/dev/null 2>&1; then
         log_info "${GREEN}✓ MySQL connection successful!${NC}"
+        
+        # 保存配置到持久化文件
+        cp "$temp_config" "$MYSQL_CONFIG"
+        chmod 600 "$MYSQL_CONFIG"
+        log_info "Configuration saved to: ${CYAN}${MYSQL_CONFIG}${NC}"
+        
         mysql_configured=true
         rm -f "$temp_config"
+        return 0
     else
         log_err "Failed to connect to MySQL server."
         log_err "Please check your credentials and try again."
-        log_err "Config file preserved for debugging: ${temp_config}"
-        # 不删除配置文件，方便调试
+        rm -f "$temp_config"
         return 1
     fi
     
@@ -467,6 +533,10 @@ backup_mysql() {
     # Step 3: 选择执行方式
     echo ""
     log_info "Step 3: Choose execution method"
+    echo ""
+    echo "  1) Run backup now"
+    echo "  2) Setup scheduled backup (crontab)"
+    echo "  3) Cancel"
     echo ""
     
     read -p "Please select [1-3]: " exec_choice
@@ -863,187 +933,12 @@ setup_cron_backup() {
             ;;
     esac
     
-    # 生成备份脚本
-    BACKUP_SCRIPT="${SCRIPT_DIR}/auto_backup_mysql.sh"
-    
+    # Step 3: 生成备份脚本（使用共享函数）
     echo ""
-    log_info "Step 3: Generating backup script..."
+    BACKUP_SCRIPT=$(generate_mysql_backup_script "${RCLONE_REMOTE_NAME}")
     
-    cat > "${BACKUP_SCRIPT}" <<SCRIPT_EOF
-#!/bin/bash
-
-# Auto-generated MySQL backup script
-# Generated by mysql_manager.sh
-
-SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-BACKUP_DIR="/backup/sql"
-LOG_FILE="/var/log/mysql_backup/backup_sql.log"
-DATE_SUFFIX=\$(date +%Y%m%d_%H%M%S)
-REMOTE_RETENTION_DAYS="7d"
-
-# MySQL connection
-DB_HOST="${DB_HOST}"
-DB_PORT="${DB_PORT}"
-DB_USER="${DB_USER}"
-DB_PASS="${DB_PASS}"
-
-# rclone remote configuration
-RCLONE_REMOTE_NAME="${RCLONE_REMOTE_NAME}"
-REMOTE_BACKUP="\${RCLONE_REMOTE_NAME}:/vps_backup/hostdare_001/sql"
-
-# MySQL config file (stored in user home for persistence)
-MYSQL_CONFIG="\$HOME/.mysql_backup.cnf"
-SCRIPT_EOF
-
-    # 添加备份逻辑
-    cat >> "${BACKUP_SCRIPT}" <<'SCRIPT_EOF3'
-
-log_msg() {
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] \$1" | tee -a "\${LOG_FILE}"
-}
-
-# Create MySQL config file
-create_mysql_config() {
-    cat > "\${MYSQL_CONFIG}" <<EOF_CONFIG
-[client]
-host=\${DB_HOST}
-port=\${DB_PORT}
-user=\${DB_USER}
-password=\${DB_PASS}
-EOF_CONFIG
-    chmod 600 "\${MYSQL_CONFIG}"
-}
-
-# Note: MySQL config file is persistent in $HOME/.mysql_backup.cnf
-# It will be reused across backup runs
-
-mkdir -p "\${BACKUP_DIR}"
-mkdir -p /var/log/mysql_backup
-if [ ! -f "\${LOG_FILE}" ]; then touch "\${LOG_FILE}"; fi
-
-log_msg "=== MySQL Backup Started ==="
-log_msg "Using rclone remote: \${RCLONE_REMOTE_NAME}"
-log_msg "Remote backup path: \${REMOTE_BACKUP}"
-
-# Check bzip2
-if ! command -v bzip2 &> /dev/null; then
-    log_msg "Warning: bzip2 is not installed. Attempting to install..."
-    apt-get update -qq && apt-get install -y bzip2 >> "\${LOG_FILE}" 2>&1
-    if ! command -v bzip2 &> /dev/null; then
-        log_msg "Critical Error: Failed to install bzip2."
-        exit 1
-    fi
-fi
-
-# Create MySQL config
-create_mysql_config
-
-# Check MySQL connection
-if ! mysql --defaults-file="\${MYSQL_CONFIG}" -e "STATUS" >/dev/null 2>&1; then
-    log_msg "Error: Cannot connect to MySQL server."
-    exit 1
-fi
-
-# Get database list
-databases=\$(mysql --defaults-file="\${MYSQL_CONFIG}" -e "SHOW DATABASES;" | grep -E -v "Database|information_schema|mysql|test|performance_schema|sys")
-
-for db in \$databases; do
-    log_msg "Processing database: \${db}"
-    
-    filename="\${db}_\${DATE_SUFFIX}.sql.bz2"
-    filepath="\${BACKUP_DIR}/\${filename}"
-
-    # Backup
-    mysqldump --defaults-file="\${MYSQL_CONFIG}" \\
-        --databases "\${db}" \\
-        --add-drop-database \\
-        --single-transaction --quick --routines --triggers --events --hex-blob \\
-        --default-character-set=utf8mb4 \\
-        | bzip2 > "\${filepath}"
-
-    # Verify and upload
-    if [ "\${PIPESTATUS[0]}" -eq 0 ] && [ -s "\${filepath}" ]; then
-        log_msg "Success: Local backup created at \${filepath}"
-
-        rclone copy "\${filepath}" "\${REMOTE_BACKUP}" >> "\${LOG_FILE}" 2>&1
-
-        if [ \$? -eq 0 ]; then
-            log_msg "Upload: \${db} uploaded successfully."
-            rm -f "\${filepath}"
-
-            remote_pattern="\${db}_*.sql.bz2"
-            remote_count=\$(rclone lsf "\${REMOTE_BACKUP}" --include "\${remote_pattern}" | wc -l)
-            
-            log_msg "Check: Found \${remote_count} backups for \${db} on remote."
-
-            if [ "\$remote_count" -gt 1 ]; then
-                log_msg "Cleanup: Removing backups for \${db} older than \${REMOTE_RETENTION_DAYS}..."
-                
-                rclone delete "\${REMOTE_BACKUP}" \\
-                    --include "\${remote_pattern}" \\
-                    --min-age "\${REMOTE_RETENTION_DAYS}" \\
-                    >> "\${LOG_FILE}" 2>&1
-            else
-                log_msg "Skip Cleanup: Only \${remote_count} copy exists for \${db}. Keeping it regardless of age."
-            fi
-
-        else
-            log_msg "Error: Failed to upload ${db}. Skipping cleanup to ensure safety."
-        fi
-    else
-        log_msg "Error: mysqldump failed for \${db}"
-        rm -f "\${filepath}"
-    fi
-done
-
-log_msg "=== MySQL Backup Finished ==="
-exit 0
-SCRIPT_EOF3
-
-    chmod +x "${BACKUP_SCRIPT}"
-    log_info "Backup script created: ${CYAN}${BACKUP_SCRIPT}${NC}"
-    
-    # 添加到 crontab
-    echo ""
-    log_info "Step 4: Adding to crontab..."
-    
-    # 检查是否已存在相同的任务
-    if crontab -l 2>/dev/null | grep -q "${BACKUP_SCRIPT}"; then
-        log_warn "A cron job for this script already exists."
-        read -p "Do you want to replace it? (yes/no) [default: no]: " replace_choice
-        replace_choice=${replace_choice:-no}
-        
-        if [ "$replace_choice" != "yes" ]; then
-            log_info "Keeping existing cron job. Setup cancelled."
-            return
-        fi
-        
-        # 删除旧的任务
-        crontab -l 2>/dev/null | grep -v "${BACKUP_SCRIPT}" | crontab -
-        log_info "Removed existing cron job."
-    fi
-    
-    # 添加新任务
-    (crontab -l 2>/dev/null; echo "${CRON_EXPR} ${BACKUP_SCRIPT} >> ${LOG_FILE} 2>&1") | crontab -
-    
-    if [ $? -eq 0 ]; then
-        echo ""
-        echo "============================================="
-        echo -e "        ${GREEN}✓ Setup Completed Successfully${NC}"
-        echo "============================================="
-        echo -e "Remote        : ${CYAN}${RCLONE_REMOTE_NAME}${NC}"
-        echo -e "Schedule      : ${CYAN}${SCHEDULE_DESC}${NC}"
-        echo -e "Cron Expr     : ${YELLOW}${CRON_EXPR}${NC}"
-        echo -e "Backup Script : ${YELLOW}${BACKUP_SCRIPT}${NC}"
-        echo -e "Log File      : ${YELLOW}${LOG_FILE}${NC}"
-        echo "============================================="
-        echo ""
-        echo "Current crontab entries:"
-        crontab -l | grep -v "^#" | grep -v "^$"
-        echo ""
-    else
-        log_err "Failed to add cron job."
-    fi
+    # Step 4: 添加到 crontab（使用共享函数）
+    setup_crontab_for_script "${BACKUP_SCRIPT}" "${CRON_EXPR}" "${SCHEDULE_DESC}"
 }
 
 # =================系统配置备份=================
