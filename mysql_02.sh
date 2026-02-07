@@ -1107,6 +1107,10 @@ log_msg "Uploading system info..."
 rclone copy "${BACKUP_DIR}/services_list.txt" "${REMOTE_FULL}/sys_info" -P >> "${SYSTEM_LOG_FILE}" 2>&1
 rclone copy "${BACKUP_DIR}/packages_list.txt" "${REMOTE_FULL}/sys_info" -P >> "${SYSTEM_LOG_FILE}" 2>&1
 
+# 清理清单文件
+rm "${BACKUP_DIR}/services_list.txt" "${BACKUP_DIR}/packages_list.txt"
+
+
 # 3. 同步配置目录
 log_msg "Starting Rclone Sync for configuration directories..."
 
@@ -1178,7 +1182,7 @@ process_directory() {
 process_directory "/opt" "opt"
 
 # 处理 /var/www
-process_directory "/var/www" "www"
+process_directory "/var/www" "var/www"
 
 
 # 5. 日志归档
