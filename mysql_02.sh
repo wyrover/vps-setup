@@ -470,10 +470,25 @@ for db in $databases; do
             if [ "$remote_count" -gt 1 ]; then
                 log_msg "Cleanup: Removing backups for ${db} older than ${REMOTE_RETENTION_DAYS}..."
                 
-                rclone delete "${REMOTE_BACKUP}" \
-                    --include "${remote_pattern}" \
-                    --min-age "${REMOTE_RETENTION_DAYS}" \
-                    >> "${LOG_FILE}" 2>&1
+                # Protect the absolute newest file regardless of age
+                # Use | delimiter to safely separate timestamp and filename
+                newest_backup=$(rclone lsf "${REMOTE_BACKUP}" --include "${remote_pattern}" --files-only --format "tp" --separator "|" | sort -r | head -n 1 | cut -d'|' -f2)
+                
+                if [ -n "$newest_backup" ]; then
+                    log_msg "Protection: Keeping active backup '${newest_backup}'"
+                    
+                    rclone delete "${REMOTE_BACKUP}" \
+                        --include "${remote_pattern}" \
+                        --min-age "${REMOTE_RETENTION_DAYS}" \
+                        --exclude "${newest_backup}" \
+                        >> "${LOG_FILE}" 2>&1
+                else
+                    # Fallback if detection fails
+                    rclone delete "${REMOTE_BACKUP}" \
+                        --include "${remote_pattern}" \
+                        --min-age "${REMOTE_RETENTION_DAYS}" \
+                        >> "${LOG_FILE}" 2>&1
+                fi
             else
                 log_msg "Skip Cleanup: Only ${remote_count} copy exists for ${db}. Keeping it regardless of age."
             fi
