@@ -77,7 +77,7 @@ install_openresty() {
     
     # 添加 GPG 密钥
     print_info "[2/5] 添加 OpenResty GPG 密钥..."
-    wget -qO - https://openresty.org/package/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/openresty.gpg
+    curl -fsSL https://openresty.org/package/pubkey.gpg | gpg --dearmor -o /usr/share/keyrings/openresty.gpg
     
     # 添加仓库
     print_info "[3/5] 添加 OpenResty 仓库..."
@@ -508,7 +508,7 @@ install_php85() {
     apt install -y lsb-release ca-certificates apt-transport-https software-properties-common gnupg2
     
     # 添加 GPG 密钥
-    wget -qO /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
+    curl -fsSL -o /etc/apt/trusted.gpg.d/php.gpg https://packages.sury.org/php/apt.gpg
     
     # 添加仓库
     echo "deb https://packages.sury.org/php/ $(lsb_release -sc) main" > /etc/apt/sources.list.d/php.list
