@@ -343,36 +343,36 @@ SCRIPT_VARS
     cat >> "${backup_script}" <<'SCRIPT_LOGIC'
 
 log_msg() {
-    echo "[\$(date '+%Y-%m-%d %H:%M:%S')] \$1" | tee -a "\${LOG_FILE}"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "${LOG_FILE}"
 }
 
 # Create MySQL config file
 create_mysql_config() {
-    cat > "\${MYSQL_CONFIG}" <<EOF_CONFIG
+    cat > "${MYSQL_CONFIG}" <<EOF_CONFIG
 [client]
-host=\${DB_HOST}
-port=\${DB_PORT}
-user=\${DB_USER}
-password=\${DB_PASS}
+host=${DB_HOST}
+port=${DB_PORT}
+user=${DB_USER}
+password=${DB_PASS}
 EOF_CONFIG
-    chmod 600 "\${MYSQL_CONFIG}"
+    chmod 600 "${MYSQL_CONFIG}"
 }
 
 # Note: MySQL config file is persistent in $HOME/.mysql_backup.cnf
 # It will be reused across backup runs
 
-mkdir -p "\${BACKUP_DIR}"
+mkdir -p "${BACKUP_DIR}"
 mkdir -p /var/log/mysql_backup
-if [ ! -f "\${LOG_FILE}" ]; then touch "\${LOG_FILE}"; fi
+if [ ! -f "${LOG_FILE}" ]; then touch "${LOG_FILE}"; fi
 
 log_msg "=== MySQL Backup Started ==="
-log_msg "Using rclone remote: \${RCLONE_REMOTE_NAME}"
-log_msg "Remote backup path: \${REMOTE_BACKUP}"
+log_msg "Using rclone remote: ${RCLONE_REMOTE_NAME}"
+log_msg "Remote backup path: ${REMOTE_BACKUP}"
 
 # Check bzip2
 if ! command -v bzip2 &> /dev/null; then
     log_msg "Warning: bzip2 is not installed. Attempting to install..."
-    apt-get update -qq && apt-get install -y bzip2 >> "\${LOG_FILE}" 2>&1
+    apt-get update -qq && apt-get install -y bzip2 >> "${LOG_FILE}" 2>&1
     if ! command -v bzip2 &> /dev/null; then
         log_msg "Critical Error: Failed to install bzip2."
         exit 1
@@ -383,60 +383,60 @@ fi
 create_mysql_config
 
 # Check MySQL connection
-if ! mysql --defaults-file="\${MYSQL_CONFIG}" -e "STATUS" >/dev/null 2>&1; then
+if ! mysql --defaults-file="${MYSQL_CONFIG}" -e "STATUS" >/dev/null 2>&1; then
     log_msg "Error: Cannot connect to MySQL server."
     exit 1
 fi
 
 # Get database list
-databases=\$(mysql --defaults-file="\${MYSQL_CONFIG}" -e "SHOW DATABASES;" | grep -E -v "Database|information_schema|mysql|test|performance_schema|sys")
+databases=$(mysql --defaults-file="${MYSQL_CONFIG}" -e "SHOW DATABASES;" | grep -E -v "Database|information_schema|mysql|test|performance_schema|sys")
 
-for db in \$databases; do
-    log_msg "Processing database: \${db}"
+for db in $databases; do
+    log_msg "Processing database: ${db}"
     
-    filename="\${db}_\${DATE_SUFFIX}.sql.bz2"
-    filepath="\${BACKUP_DIR}/\${filename}"
+    filename="${db}_${DATE_SUFFIX}.sql.bz2"
+    filepath="${BACKUP_DIR}/${filename}"
 
     # Backup
-    mysqldump --defaults-file="\${MYSQL_CONFIG}" \
-        --databases "\${db}" \
+    mysqldump --defaults-file="${MYSQL_CONFIG}" \
+        --databases "${db}" \
         --add-drop-database \
         --single-transaction --quick --routines --triggers --events --hex-blob \
         --default-character-set=utf8mb4 \
-        | bzip2 > "\${filepath}"
+        | bzip2 > "${filepath}"
 
     # Verify and upload
-    if [ "\${PIPESTATUS[0]}" -eq 0 ] && [ -s "\${filepath}" ]; then
-        log_msg "Success: Local backup created at \${filepath}"
+    if [ "${PIPESTATUS[0]}" -eq 0 ] && [ -s "${filepath}" ]; then
+        log_msg "Success: Local backup created at ${filepath}"
 
-        rclone copy "\${filepath}" "\${REMOTE_BACKUP}" >> "\${LOG_FILE}" 2>&1
+        rclone copy "${filepath}" "${REMOTE_BACKUP}" >> "${LOG_FILE}" 2>&1
 
-        if [ \$? -eq 0 ]; then
-            log_msg "Upload: \${db} uploaded successfully."
-            rm -f "\${filepath}"
+        if [ $? -eq 0 ]; then
+            log_msg "Upload: ${db} uploaded successfully."
+            rm -f "${filepath}"
 
-            remote_pattern="\${db}_*.sql.bz2"
-            remote_count=\$(rclone lsf "\${REMOTE_BACKUP}" --include "\${remote_pattern}" | wc -l)
+            remote_pattern="${db}_*.sql.bz2"
+            remote_count=$(rclone lsf "${REMOTE_BACKUP}" --include "${remote_pattern}" | wc -l)
             
-            log_msg "Check: Found \${remote_count} backups for \${db} on remote."
+            log_msg "Check: Found ${remote_count} backups for ${db} on remote."
 
-            if [ "\$remote_count" -gt 1 ]; then
-                log_msg "Cleanup: Removing backups for \${db} older than \${REMOTE_RETENTION_DAYS}..."
+            if [ "$remote_count" -gt 1 ]; then
+                log_msg "Cleanup: Removing backups for ${db} older than ${REMOTE_RETENTION_DAYS}..."
                 
-                rclone delete "\${REMOTE_BACKUP}" \
-                    --include "\${remote_pattern}" \
-                    --min-age "\${REMOTE_RETENTION_DAYS}" \
-                    >> "\${LOG_FILE}" 2>&1
+                rclone delete "${REMOTE_BACKUP}" \
+                    --include "${remote_pattern}" \
+                    --min-age "${REMOTE_RETENTION_DAYS}" \
+                    >> "${LOG_FILE}" 2>&1
             else
-                log_msg "Skip Cleanup: Only \${remote_count} copy exists for \${db}. Keeping it regardless of age."
+                log_msg "Skip Cleanup: Only ${remote_count} copy exists for ${db}. Keeping it regardless of age."
             fi
 
         else
-            log_msg "Error: Failed to upload \${db}. Skipping cleanup to ensure safety."
+            log_msg "Error: Failed to upload ${db}. Skipping cleanup to ensure safety."
         fi
     else
-        log_msg "Error: mysqldump failed for \${db}"
-        rm -f "\${filepath}"
+        log_msg "Error: mysqldump failed for ${db}"
+        rm -f "${filepath}"
     fi
 done
 
