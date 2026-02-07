@@ -176,6 +176,50 @@ mysql_configured=false
 
 # 持久化配置文件路径
 MYSQL_CONFIG="$HOME/.mysql_backup.cnf"
+VPS_CONFIG="$HOME/.vps_instance.conf"
+
+# 配置 VPS 实例名
+setup_vps_instance() {
+    # 如果已经设置,跳过
+    if [ -n "$VPS_INSTANCE_NAME" ]; then
+        return
+    fi
+    
+    # 尝试从持久化配置文件读取，但仍会要求用户确认或输入
+    local saved_vps_name=""
+    if [ -f "$VPS_CONFIG" ]; then
+        saved_vps_name=$(cat "$VPS_CONFIG" 2>/dev/null)
+    fi
+    
+    echo ""
+    log_info "Configure VPS instance name (used in backup path)"
+    
+    # 如果有保存的名称，提供给用户参考
+    if [ -n "$saved_vps_name" ]; then
+        log_info "Found saved instance name: ${CYAN}${saved_vps_name}${NC}"
+        read -p "Use saved name? (yes/no) [default: yes]: " use_saved
+        use_saved=${use_saved:-yes}
+        if [ "$use_saved" = "yes" ]; then
+            VPS_INSTANCE_NAME="$saved_vps_name"
+        fi
+    fi
+
+    # 如果用户选择不使用保存的名称，或者没有保存的名称，则要求输入
+    while [ -z "$VPS_INSTANCE_NAME" ]; do
+        read -p "Enter VPS instance name: " input_instance
+        if [ -n "$input_instance" ]; then
+            VPS_INSTANCE_NAME="$input_instance"
+        else
+            log_warn "Instance name cannot be empty. Please enter a name."
+        fi
+    done
+    
+    # 保存到配置文件
+    echo "$VPS_INSTANCE_NAME" > "$VPS_CONFIG"
+    chmod 600 "$VPS_CONFIG"
+    log_info "VPS instance name saved: ${CYAN}${VPS_INSTANCE_NAME}${NC}"
+}
+
 
 # 交互式配置 MySQL 连接信息
 setup_mysql_connection() {
@@ -1080,9 +1124,7 @@ for local_path in "${SYNC_DIRS[@]}"; do
     fi
 done
 
-# 4. 处理 /opt 目录
-log_msg "Processing ${SRC_DIR}..."
-
+# 4. 处理应用目录 (/opt 和 /var/www)
 TAR_EXCLUDES=(
     --exclude='*/node_modules'
     --exclude='*/.cache'
@@ -1094,35 +1136,50 @@ TAR_EXCLUDES=(
     --exclude='*/dokuwiki/data/tmp'
 )
 
-if [ -d "${SRC_DIR}" ]; then
-    for item in "${SRC_DIR}"/*; do
-        [ -e "$item" ] || continue
-        
-        item_name=$(basename "${item}")
-        
-        if [ -f "${item}" ]; then
-            log_msg "Copying file: ${item}"
-            rclone copy "${item}" "${REMOTE_FULL}/opt" -P >> "${SYSTEM_LOG_FILE}" 2>&1
-        
-        elif [ -d "${item}" ]; then
-            archive_file="${BACKUP_DIR}/${item_name}.tar.gz"
+process_directory() {
+    local src_dir="$1"
+    local remote_sub="$2"
+    
+    log_msg "Processing ${src_dir}..."
+    
+    if [ -d "${src_dir}" ]; then
+        for item in "${src_dir}"/*; do
+            [ -e "$item" ] || continue
             
-            log_msg "Archiving directory: ${item} -> ${archive_file}"
+            item_name=$(basename "${item}")
             
-            tar "${TAR_EXCLUDES[@]}" -czf "${archive_file}" -C "${SRC_DIR}" "${item_name}" >> "${SYSTEM_LOG_FILE}" 2>&1
+            if [ -f "${item}" ]; then
+                log_msg "Copying file: ${item}"
+                rclone copy "${item}" "${REMOTE_FULL}/${remote_sub}" -P >> "${SYSTEM_LOG_FILE}" 2>&1
             
-            if [ $? -eq 0 ] && [ -f "${archive_file}" ]; then
-                log_msg "Uploading archive: ${archive_file}"
-                rclone copy "${archive_file}" "${REMOTE_FULL}/opt" -P >> "${SYSTEM_LOG_FILE}" 2>&1
-                rm "${archive_file}"
-            else
-                log_msg "Error: Failed to create archive for ${item_name}"
+            elif [ -d "${item}" ]; then
+                archive_file="${BACKUP_DIR}/${item_name}.tar.gz"
+                
+                log_msg "Archiving directory: ${item} -> ${archive_file}"
+                
+                # 使用 tar 打包，排除指定目录
+                tar "${TAR_EXCLUDES[@]}" -czf "${archive_file}" -C "${src_dir}" "${item_name}" >> "${SYSTEM_LOG_FILE}" 2>&1
+                
+                if [ $? -eq 0 ] && [ -f "${archive_file}" ]; then
+                    log_msg "Uploading archive: ${archive_file}"
+                    rclone copy "${archive_file}" "${REMOTE_FULL}/${remote_sub}" -P >> "${SYSTEM_LOG_FILE}" 2>&1
+                    rm "${archive_file}"
+                else
+                    log_msg "Error: Failed to create archive for ${item_name}"
+                fi
             fi
-        fi
-    done
-else
-    log_msg "Warning: ${SRC_DIR} not found, skipping."
-fi
+        done
+    else
+        log_msg "Warning: ${src_dir} not found, skipping."
+    fi
+}
+
+# 处理 /opt
+process_directory "/opt" "opt"
+
+# 处理 /var/www
+process_directory "/var/www" "www"
+
 
 # 5. 日志归档
 log_msg "=== System Backup Finished ==="
@@ -1514,8 +1571,8 @@ show_menu() {
     echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
     echo ""
     echo -e "  ${GREEN}1${NC}) Backup MySQL Databases"
-    echo -e "  ${CYAN}2${NC}) Restore MySQL Database"
-    echo -e "  ${BLUE}3${NC}) Backup System Configuration"
+    echo -e "  ${BLUE}2${NC}) Backup System Configuration"
+    echo -e "  ${CYAN}3${NC}) Restore MySQL Database"
     echo -e "  ${YELLOW}4${NC}) Restore /opt Directory"
     echo -e "  ${RED}5${NC}) Exit"
     echo ""
@@ -1541,11 +1598,11 @@ main() {
                 read -p "Press Enter to continue..."
                 ;;
             2)
-                restore_mysql
+                backup_system_config
                 read -p "Press Enter to continue..."
                 ;;
             3)
-                backup_system_config
+                restore_mysql
                 read -p "Press Enter to continue..."
                 ;;
             4)
