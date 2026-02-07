@@ -1353,6 +1353,11 @@ download_via_http() {
     echo -e "  保存为: ${CYAN}$local_filename${NC}"
     echo ""
     
+    # 调试输出：显示完整的 curl 命令
+    echo -e "${YELLOW}[DEBUG] 执行的 curl 命令：${NC}"
+    echo -e "${CYAN}curl $curl_opts -o \"$local_filename\" \"$backup_url\"${NC}"
+    echo ""
+    
     if curl $curl_opts -o "$local_filename" "$backup_url" 2>&1; then
         # 检查文件是否成功下载（文件存在且大小大于0）
         if [ -f "$local_filename" ] && [ -s "$local_filename" ]; then
