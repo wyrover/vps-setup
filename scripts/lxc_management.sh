@@ -159,6 +159,13 @@ install_lxc() {
         systemctl enable lxc lxc-net
         systemctl start lxc-net
         
+        # 启用 iptables 持久化服务
+        if systemctl list-unit-files | grep -q netfilter-persistent; then
+            systemctl enable netfilter-persistent
+            systemctl start netfilter-persistent
+            print_success "iptables 持久化服务已启用"
+        fi
+        
         print_success "LXC 服务已启动"
         echo ""
         print_info "已安装组件："
@@ -255,8 +262,15 @@ EOF
     iptables -A FORWARD -i lxcbr0 -o "$IFACE" -j ACCEPT
     iptables -A FORWARD -i "$IFACE" -o lxcbr0 -m state --state RELATED,ESTABLISHED -j ACCEPT
     
-    # 保存 iptables 规则
-    iptables-save > /etc/iptables/rules.v4
+    # 保存 iptables 规则（使用 netfilter-persistent 确保重启后恢复）
+    if command -v netfilter-persistent &>/dev/null; then
+        netfilter-persistent save
+        print_success "NAT 规则已持久化保存"
+    else
+        # 降级到手动保存
+        iptables-save > /etc/iptables/rules.v4
+        print_warning "使用手动保存（建议安装 iptables-persistent）"
+    fi
     
     print_success "网络配置完成"
     echo ""
@@ -1071,8 +1085,15 @@ setup_port_forward() {
     iptables -t nat -A PREROUTING -i "$IFACE" -p tcp --dport "$host_port" -j DNAT --to-destination "$container_ip":"$container_port"
     iptables -A FORWARD -p tcp -d "$container_ip" --dport "$container_port" -j ACCEPT
     
-    # 保存规则
-    iptables-save > /etc/iptables/rules.v4
+    # 保存规则（使用 netfilter-persistent 确保重启后恢复）
+    if command -v netfilter-persistent &>/dev/null; then
+        netfilter-persistent save
+        print_success "规则已持久化保存（重启后自动恢复）"
+    else
+        # 降级到手动保存
+        iptables-save > /etc/iptables/rules.v4
+        print_warning "使用手动保存（建议安装 iptables-persistent）"
+    fi
     
     print_success "端口转发配置完成"
     echo ""
