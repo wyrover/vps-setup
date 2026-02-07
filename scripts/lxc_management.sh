@@ -568,6 +568,32 @@ set_static_ip() {
         return
     fi
     
+    # 检测网桥子网
+    print_info "检测网桥配置..."
+    local BRIDGE_IP=$(ip addr show lxcbr0 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1)
+    
+    if [ -z "$BRIDGE_IP" ]; then
+        print_error "无法检测到 lxcbr0 网桥"
+        echo ""
+        print_warning "请先配置网络桥接（菜单选项 2）"
+        press_enter
+        return
+    fi
+    
+    # 提取子网标识（第三个八位组）
+    local SUBNET_OCTET=$(echo "$BRIDGE_IP" | cut -d'.' -f3)
+    
+    # 验证检测到的 IP 格式
+    if [[ ! "$BRIDGE_IP" =~ ^10\.[0-3]\.0\.1$ ]]; then
+        print_error "检测到的网桥 IP 格式异常: $BRIDGE_IP"
+        echo ""
+        print_warning "期望格式: 10.X.0.1 (X=0-3)"
+        press_enter
+        return
+    fi
+    
+    print_success "检测到网桥: $BRIDGE_IP (子网: 10.${SUBNET_OCTET}.0.0/24)"
+    
     # 获取当前状态
     local container_state=$(lxc-info -n "$target" -s 2>/dev/null | awk '{print $2}')
     local was_running=false
@@ -578,19 +604,19 @@ set_static_ip() {
     echo ""
     print_info "当前容器状态: $container_state"
     
-    # 显示可用 IP 范围
+    # 显示可用 IP 范围（动态计算）
     echo ""
     print_info "可用 IP 范围："
-    echo "  静态 IP: 10.0.0.2 - 10.0.0.99"
-    echo "  DHCP 范围: 10.0.0.100 - 10.0.0.254"
-    echo "  网关: 10.0.0.1"
+    echo "  静态 IP: 10.${SUBNET_OCTET}.0.2 - 10.${SUBNET_OCTET}.0.99"
+    echo "  DHCP 范围: 10.${SUBNET_OCTET}.0.100 - 10.${SUBNET_OCTET}.0.254"
+    echo "  网关: 10.${SUBNET_OCTET}.0.1"
     echo ""
     
-    read -p "静态 IP (10.0.0.2-99): " static_ip
+    read -p "静态 IP (10.${SUBNET_OCTET}.0.2-99): " static_ip
     
-    # 验证 IP 格式和范围
-    if [[ ! "$static_ip" =~ ^10\.0\.0\.([2-9]|[1-9][0-9])$ ]]; then
-        print_error "IP 地址格式错误或超出范围 (10.0.0.2-99)"
+    # 验证 IP 格式和范围（动态正则表达式）
+    if [[ ! "$static_ip" =~ ^10\.${SUBNET_OCTET}\.0\.([2-9]|[1-9][0-9])$ ]]; then
+        print_error "IP 地址格式错误或超出范围 (10.${SUBNET_OCTET}.0.2-99)"
         press_enter
         return
     fi
@@ -638,7 +664,7 @@ set_static_ip() {
 
 # 静态 IP 配置
 lxc.net.0.ipv4.address = ${static_ip}/24
-lxc.net.0.ipv4.gateway = 10.0.0.1
+lxc.net.0.ipv4.gateway = 10.${SUBNET_OCTET}.0.1
 EOF
     
     print_success "容器配置已更新"
@@ -685,7 +711,7 @@ EOF
     echo "  容器名称: $target"
     echo "  MAC 地址: $container_mac"
     echo "  静态 IP: $static_ip/24"
-    echo "  网关: 10.0.0.1"
+    echo "  网关: 10.${SUBNET_OCTET}.0.1"
     echo "  DNS: 8.8.8.8, 8.8.4.4, 1.1.1.1"
     echo ""
     
@@ -727,7 +753,7 @@ EOF
             read -p "是否测试网络连通性？[y/N]: " test_network
             if [[ "$test_network" =~ ^[Yy]$ ]]; then
                 print_info "测试网关连通性..."
-                if lxc-attach -n "$target" -- ping -c 2 10.0.0.1 &>/dev/null; then
+                if lxc-attach -n "$target" -- ping -c 2 10.${SUBNET_OCTET}.0.1 &>/dev/null; then
                     print_success "✓ 网关连通"
                 else
                     print_error "✗ 网关不通"
