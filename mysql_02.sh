@@ -176,6 +176,50 @@ mysql_configured=false
 
 # 持久化配置文件路径
 MYSQL_CONFIG="$HOME/.mysql_backup.cnf"
+VPS_CONFIG="$HOME/.vps_instance.conf"
+
+# 配置 VPS 实例名
+setup_vps_instance() {
+    # 如果已经设置,跳过
+    if [ -n "$VPS_INSTANCE_NAME" ]; then
+        return
+    fi
+    
+    # 尝试从持久化配置文件读取，但仍会要求用户确认或输入
+    local saved_vps_name=""
+    if [ -f "$VPS_CONFIG" ]; then
+        saved_vps_name=$(cat "$VPS_CONFIG" 2>/dev/null)
+    fi
+    
+    echo ""
+    log_info "Configure VPS instance name (used in backup path)"
+    
+    # 如果有保存的名称，提供给用户参考
+    if [ -n "$saved_vps_name" ]; then
+        log_info "Found saved instance name: ${CYAN}${saved_vps_name}${NC}"
+        read -p "Use saved name? (yes/no) [default: yes]: " use_saved
+        use_saved=${use_saved:-yes}
+        if [ "$use_saved" = "yes" ]; then
+            VPS_INSTANCE_NAME="$saved_vps_name"
+        fi
+    fi
+
+    # 如果用户选择不使用保存的名称，或者没有保存的名称，则要求输入
+    while [ -z "$VPS_INSTANCE_NAME" ]; do
+        read -p "Enter VPS instance name: " input_instance
+        if [ -n "$input_instance" ]; then
+            VPS_INSTANCE_NAME="$input_instance"
+        else
+            log_warn "Instance name cannot be empty. Please enter a name."
+        fi
+    done
+    
+    # 保存到配置文件
+    echo "$VPS_INSTANCE_NAME" > "$VPS_CONFIG"
+    chmod 600 "$VPS_CONFIG"
+    log_info "VPS instance name saved: ${CYAN}${VPS_INSTANCE_NAME}${NC}"
+}
+
 
 # 交互式配置 MySQL 连接信息
 setup_mysql_connection() {
