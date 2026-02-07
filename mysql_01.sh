@@ -1339,77 +1339,97 @@ download_via_http() {
         fi
     fi
     
-    # 自动检测是否需要 HTTP 认证（禁用缓存）
-    echo ""
-    echo -e "${BLUE}正在检测是否需要 HTTP 认证...${NC}"
-    local http_code=$(curl -s -o /dev/null -w "%{http_code}" -L -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$backup_url")
-    
     local curl_opts="-L"
     local http_user=""
     local http_pass=""
     local need_auth="no"
     
-    if [ "$http_code" == "401" ]; then
-        need_auth="yes"
-        echo -e "${YELLOW}检测到需要 HTTP 认证（HTTP 401）${NC}"
-        echo ""
-        
-        # 尝试读取保存的凭据
-        local saved_user=""
-        local saved_pass=""
-        
-        if [ -f "$HTTP_CREDS_FILE" ]; then
-            source "$HTTP_CREDS_FILE" 2>/dev/null
-            saved_user="$HTTP_USERNAME"
-            saved_pass="$HTTP_PASSWORD"
-        fi
-        
-        # 如果有保存的凭据，显示并让用户确认
-        if [ -n "$saved_user" ]; then
-            echo -e "${CYAN}检测到已保存的认证信息：${NC}"
-            echo -e "  用户名: ${YELLOW}$saved_user${NC}"
-            echo -e "  密码: ${YELLOW}********${NC}"
-            echo ""
-            echo -e "${YELLOW}提示: 直接回车使用默认值，输入新值则覆盖${NC}"
-            echo ""
-            
-            read -p "用户名 [$saved_user]: " http_user
-            http_user=${http_user:-$saved_user}
-            
-            read -sp "密码 [使用已保存]: " http_pass
-            echo ""
-            http_pass=${http_pass:-$saved_pass}
-        else
-            read -p "用户名: " http_user
-            read -sp "密码: " http_pass
-            echo ""
-        fi
-        
-        curl_opts="$curl_opts -u \"$http_user:$http_pass\""
-    else
-        echo -e "${GREEN}✓ 无需 HTTP 认证（HTTP $http_code）${NC}"
+    echo ""
+    echo -e "${BLUE}配置 HTTP 认证...${NC}"
+
+    # 1. 尝试读取保存的凭据
+    local saved_user=""
+    local saved_pass=""
+    
+    if [ -f "$HTTP_CREDS_FILE" ]; then
+        source "$HTTP_CREDS_FILE" 2>/dev/null
+        saved_user="$HTTP_USERNAME"
+        saved_pass="$HTTP_PASSWORD"
     fi
     
-    echo ""
-    echo -e "${BLUE}正在下载备份文件...${NC}"
-    echo -e "  URL: ${CYAN}$backup_url${NC}"
-    echo -e "  保存为: ${CYAN}$local_filename${NC}"
-    echo ""
+    # 2. 如果有保存的凭据，优先询问
+    if [ -n "$saved_user" ]; then
+        echo -e "${CYAN}发现已保存的认证信息：${NC}"
+        echo -e "  用户名: ${YELLOW}$saved_user${NC}"
+        echo -e "  密码: ${YELLOW}********${NC}"
+        echo ""
+        read -p "是否使用此凭据？(yes/no) [默认: yes]: " use_saved
+        use_saved=${use_saved:-yes}
+        
+        if [ "$use_saved" = "yes" ]; then
+            http_user="$saved_user"
+            http_pass="$saved_pass"
+            need_auth="yes"
+        fi
+    fi
     
-    # 调试输出：显示完整的 curl 命令
-    echo -e "${YELLOW}[DEBUG] 执行的 curl 命令：${NC}"
-    echo -e "${CYAN}curl $curl_opts -o \"$local_filename\" \"$backup_url\"${NC}"
-    echo ""
-    
-    if curl $curl_opts -o "$local_filename" "$backup_url" 2>&1; then
-        # 检查文件是否成功下载（文件存在且大小大于0）
-        if [ -f "$local_filename" ] && [ -s "$local_filename" ]; then
+    # 3. 如果没有使用保存凭据，询问是否需要认证
+    if [ "$need_auth" == "no" ]; then
+        echo ""
+        read -p "此 URL 是否需要 HTTP 认证？(y/n) [默认: n]: " ask_auth
+        ask_auth=${ask_auth:-n}
+        
+        if [[ "$ask_auth" =~ ^[Yy]$ ]]; then
+            need_auth="yes"
+            read -p "请输入用户名: " http_user
+            read -sp "请输入密码: " http_pass
             echo ""
-            echo -e "${GREEN}✓ 下载成功！${NC}"
             
-            # 如果使用了认证且下载成功，自动保存凭据
-            if [ "$need_auth" == "yes" ] && [ -n "$http_user" ]; then
-                cat > "$HTTP_CREDS_FILE" <<EOF
+            # 询问是否保存
+            if [ -n "$http_user" ]; then
+                read -p "是否保存凭据以供下次使用？(y/n): " save_creds
+                if [[ "$save_creds" =~ ^[Yy]$ ]]; then
+                    cat > "$HTTP_CREDS_FILE" <<EOF
+HTTP_USERNAME="$http_user"
+HTTP_PASSWORD="$http_pass"
+EOF
+                    chmod 600 "$HTTP_CREDS_FILE"
+                    echo -e "${GREEN}凭据已保存到 $HTTP_CREDS_FILE${NC}"
+                fi
+            fi
+        fi
+    fi
+    
+    # 4. 构建并执行下载命令
+    echo ""
+    echo -e "${BLUE}开始下载...${NC}"
+    
+    local auth_param=""
+    if [ "$need_auth" == "yes" ] && [ -n "$http_user" ]; then
+        # 使用 -u 并在密码包含特殊字符时引用
+        auth_param="-u \"$http_user:$http_pass\""
+        curl_opts="$curl_opts -u \"$http_user:$http_pass\""
+    fi
+
+    # 显示执行的命令（隐藏密码）
+    local display_cmd="curl -L"
+    if [ "$need_auth" == "yes" ]; then
+         display_cmd="$display_cmd -u \"$http_user:********\""
+    fi
+    display_cmd="$display_cmd -o \"$local_filename\" \"$backup_url\""
+    
+    echo -e "[DEBUG] 执行命令: $display_cmd"
+    
+    # 使用 eval 执行以正确处理引号
+    eval curl -L "$auth_param" -o "\"$local_filename\"" "\"$backup_url\""
+    
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo -e "${GREEN}✓ 下载成功！${NC}"
+        
+        # 如果使用了认证且下载成功，自动保存凭据
+        if [ "$need_auth" == "yes" ] && [ -n "$http_user" ]; then
+            cat > "$HTTP_CREDS_FILE" <<EOF
 # MySQL Manager HTTP 认证凭据
 # 此文件由脚本自动生成和管理
 HTTP_USERNAME="$http_user"
