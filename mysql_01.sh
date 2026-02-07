@@ -343,12 +343,55 @@ select_profile() {
 # 检查 MySQL 客户端是否安装
 check_mysql_client() {
     if ! command -v mysql &> /dev/null; then
-        echo -e "${RED}错误: 未检测到 mysql 客户端，请先安装 MySQL${NC}"
-        exit 1
+        echo -e "${RED}错误: 未检测到 mysql 客户端${NC}"
+        echo ""
+        echo -e "${YELLOW}MySQL 客户端未安装，需要安装才能使用此脚本。${NC}"
+        echo ""
+        read -p "是否现在安装 MySQL 客户端？[Y/n]: " install_choice
+        
+        if [[ ! "$install_choice" =~ ^[Nn]$ ]]; then
+            echo ""
+            echo -e "${BLUE}正在安装 MySQL 客户端...${NC}"
+            echo ""
+            
+            # Debian 12 默认使用 MariaDB 客户端
+            if sudo apt-get update && sudo apt-get install -y default-mysql-client; then
+                echo ""
+                echo -e "${GREEN}✓ MySQL 客户端安装成功！${NC}"
+                echo ""
+                
+                # 显示安装的版本
+                if command -v mysql &> /dev/null; then
+                    mysql --version
+                fi
+                echo ""
+                echo -e "${CYAN}提示: Debian 12 默认安装的是 MariaDB 客户端，与 MySQL 完全兼容${NC}"
+                echo ""
+                read -p "按 Enter 键继续..."
+            else
+                echo ""
+                echo -e "${RED}✗ 安装失败${NC}"
+                echo ""
+                echo -e "${YELLOW}请手动安装 MySQL 客户端：${NC}"
+                echo "  sudo apt-get update"
+                echo "  sudo apt-get install -y default-mysql-client"
+                echo ""
+                exit 1
+            fi
+        else
+            echo ""
+            echo -e "${YELLOW}已取消安装，脚本无法继续运行${NC}"
+            exit 1
+        fi
     fi
     
     if ! command -v mysqldump &> /dev/null; then
-        echo -e "${RED}错误: 未检测到 mysqldump 工具，请先安装 MySQL${NC}"
+        echo -e "${RED}错误: 未检测到 mysqldump 工具${NC}"
+        echo -e "${YELLOW}这通常不应该发生，mysqldump 应该随 MySQL 客户端一起安装${NC}"
+        echo ""
+        echo -e "${YELLOW}请尝试重新安装：${NC}"
+        echo "  sudo apt-get install --reinstall default-mysql-client"
+        echo ""
         exit 1
     fi
 }
