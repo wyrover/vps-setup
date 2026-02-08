@@ -536,21 +536,10 @@ create_debian12() {
             echo "# LXC_REMARK: $remark" >> "$config_file"
         fi
         
-        # 询问是否立即启动
-        echo ""
-        read -p "是否立即启动容器？(y/n): " start_now
-        if [[ "$start_now" =~ ^[yY]$ ]]; then
-            lxc-start -n "$container_name"
-            print_success "容器已启动"
-            
-            sleep 2
-            
-            # 询问是否配置静态 IP
-            read -p "是否配置静态 IP？(y/n): " set_ip
-            if [[ "$set_ip" =~ ^[yY]$ ]]; then
-                set_static_ip "$container_name"
-            fi
-        fi
+        # 直接配置静态 IP
+        set_static_ip "$container_name"
+        
+
     else
         print_error "容器创建失败"
     fi
@@ -742,57 +731,57 @@ EOF
     echo ""
     
     # 询问是否启动容器
-    if [ "$was_running" = true ]; then
-        read -p "是否启动容器？[Y/n]: " start_confirm
-        if [[ ! "$start_confirm" =~ ^[Nn]$ ]]; then
-            print_info "启动容器..."
-            lxc-start -n "$target"
-            
-            # 等待容器启动
-            sleep 3
-            
-            # 验证 IP 地址
-            print_info "验证网络配置..."
-            sleep 2
-            
-            local current_ip=$(lxc-attach -n "$target" -- ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
-            
-            if [ "$current_ip" = "$static_ip" ]; then
-                print_success "✓ IP 地址配置成功: $current_ip"
+    # 询问是否启动容器
+    echo ""
+    read -p "是否启动容器以验证配置？[Y/n]: " start_confirm
+    if [[ ! "$start_confirm" =~ ^[Nn]$ ]]; then
+        print_info "启动容器..."
+        lxc-start -n "$target"
+        
+        # 等待容器启动
+        sleep 3
+        
+        # 验证 IP 地址
+        print_info "验证网络配置..."
+        sleep 2
+        
+        local current_ip=$(lxc-attach -n "$target" -- ip -4 addr show eth0 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -1)
+        
+        if [ "$current_ip" = "$static_ip" ]; then
+            print_success "✓ IP 地址配置成功: $current_ip"
+        else
+            print_warning "⚠ IP 地址不匹配"
+            echo "  期望: $static_ip"
+            echo "  实际: ${current_ip:-无}"
+        fi
+        
+        # 测试连通性
+        echo ""
+        read -p "是否测试网络连通性？[y/N]: " test_network
+        if [[ "$test_network" =~ ^[Yy]$ ]]; then
+            print_info "测试网关连通性..."
+            if lxc-attach -n "$target" -- ping -c 2 10.${SUBNET_OCTET}.0.1 &>/dev/null; then
+                print_success "✓ 网关连通"
             else
-                print_warning "⚠ IP 地址不匹配"
-                echo "  期望: $static_ip"
-                echo "  实际: ${current_ip:-无}"
+                print_error "✗ 网关不通"
             fi
             
-            # 测试连通性
-            echo ""
-            read -p "是否测试网络连通性？[y/N]: " test_network
-            if [[ "$test_network" =~ ^[Yy]$ ]]; then
-                print_info "测试网关连通性..."
-                if lxc-attach -n "$target" -- ping -c 2 10.${SUBNET_OCTET}.0.1 &>/dev/null; then
-                    print_success "✓ 网关连通"
-                else
-                    print_error "✗ 网关不通"
-                fi
-                
-                print_info "测试外网连通性..."
-                if lxc-attach -n "$target" -- ping -c 2 8.8.8.8 &>/dev/null; then
-                    print_success "✓ 外网连通"
-                else
-                    print_error "✗ 外网不通"
-                fi
-                
-                print_info "测试 DNS 解析..."
-                if lxc-attach -n "$target" -- ping -c 2 www.google.com &>/dev/null; then
-                    print_success "✓ DNS 解析正常"
-                else
-                    print_error "✗ DNS 解析失败"
-                fi
+            print_info "测试外网连通性..."
+            if lxc-attach -n "$target" -- ping -c 2 8.8.8.8 &>/dev/null; then
+                print_success "✓ 外网连通"
+            else
+                print_error "✗ 外网不通"
+            fi
+            
+            print_info "测试 DNS 解析..."
+            if lxc-attach -n "$target" -- ping -c 2 www.google.com &>/dev/null; then
+                print_success "✓ DNS 解析正常"
+            else
+                print_error "✗ DNS 解析失败"
             fi
         fi
     else
-        print_info "容器已停止，请手动启动以应用配置"
+        print_info "配置已保存，请手动启动以应用配置"
     fi
     
     echo ""
