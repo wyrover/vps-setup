@@ -525,7 +525,7 @@ create_debian12() {
         local host_swap=$(free -m | awk '/^Swap:/{print $2}')
         if [ "$host_swap" -gt 0 ]; then
             print_info "配置容器 Swap 限制..."
-            echo "lxc.cgroup2.memory.swap.max = $((host_swap/2))M" >> "$config_file"
+            echo "lxc.cgroup2.memory.swap.max = ${host_swap}M" >> "$config_file"
         fi
         
         # 询问是否添加备注
