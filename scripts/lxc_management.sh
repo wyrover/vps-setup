@@ -618,26 +618,37 @@ set_static_ip() {
     echo "  网关: 10.${SUBNET_OCTET}.0.1"
     echo ""
     
-    read -p "静态 IP (10.${SUBNET_OCTET}.0.2-99): " static_ip
-    
-    # 验证 IP 格式和范围（动态正则表达式）
-    if [[ ! "$static_ip" =~ ^10\.${SUBNET_OCTET}\.0\.([2-9]|[1-9][0-9])$ ]]; then
-        print_error "IP 地址格式错误或超出范围 (10.${SUBNET_OCTET}.0.2-99)"
-        press_enter
-        return
-    fi
-    
-    # 检查 IP 是否已被使用
-    print_info "检查 IP 冲突..."
-    for container in $(lxc-ls 2>/dev/null); do
-        if [ "$container" = "$target" ]; then
+    # 循环询问静态 IP，直到格式正确且无冲突
+    local static_ip=""
+    while true; do
+        read -p "请指定静态 IP (10.${SUBNET_OCTET}.0.2-99): " static_ip
+
+        # 验证 IP 格式和范围
+        if [[ ! "$static_ip" =~ ^10\.${SUBNET_OCTET}\.0\.([2-9]|[1-9][0-9])$ ]]; then
+            print_error "IP 地址格式错误或超出范围，请重新输入 (10.${SUBNET_OCTET}.0.2-99)"
+            echo ""
             continue
         fi
-        local existing_ip=$(grep "lxc.net.0.ipv4.address" "/var/lib/lxc/$container/config" 2>/dev/null | awk '{print $3}' | cut -d'/' -f1)
-        if [ "$existing_ip" = "$static_ip" ]; then
-            print_error "IP $static_ip 已被容器 $container 使用"
-            press_enter
-            return
+
+        # 检查 IP 是否已被其他容器使用
+        local ip_conflict=false
+        print_info "检查 IP 冲突..."
+        for container in $(lxc-ls 2>/dev/null); do
+            if [ "$container" = "$target" ]; then
+                continue
+            fi
+            local existing_ip
+            existing_ip=$(grep "lxc.net.0.ipv4.address" "/var/lib/lxc/$container/config" 2>/dev/null | awk '{print $3}' | cut -d'/' -f1)
+            if [ "$existing_ip" = "$static_ip" ]; then
+                print_error "IP $static_ip 已被容器 $container 使用，请重新指定"
+                echo ""
+                ip_conflict=true
+                break
+            fi
+        done
+
+        if [ "$ip_conflict" = false ]; then
+            break
         fi
     done
     
@@ -674,6 +685,26 @@ lxc.net.0.ipv4.gateway = 10.${SUBNET_OCTET}.0.1
 EOF
     
     print_success "容器配置已更新"
+
+    # 修改容器内部网络接口配置（禁用 DHCP，改用静态 IP）
+    print_info "配置容器内部网络接口（禁用 DHCP）..."
+    local ifaces_file="/var/lib/lxc/$target/rootfs/etc/network/interfaces"
+    if [ -f "$ifaces_file" ]; then
+        cp "$ifaces_file" "${ifaces_file}.bak.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+    fi
+    mkdir -p "$(dirname "$ifaces_file")"
+    cat > "$ifaces_file" << EOF
+# 由 LXC 管理脚本生成 - 静态 IP 配置（禁用 DHCP）
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+    address ${static_ip}
+    netmask 255.255.255.0
+    gateway 10.${SUBNET_OCTET}.0.1
+EOF
+    print_success "容器内部网络已配置为静态 IP（DHCP 已禁用）"
     
     # 配置容器内的 DNS
     print_info "配置容器 DNS..."
@@ -693,12 +724,11 @@ EOF
         rm -f "$resolv_conf"
     fi
     
-    # 创建新的 resolv.conf（使用公共 DNS）
+    # 创建新的 resolv.conf（指向 systemd-resolved stub，保留本地 DNS 缓存）
     cat > "$resolv_conf" << 'EOF'
-# LXC 静态 DNS 配置
-nameserver 8.8.8.8
-nameserver 8.8.4.4
-nameserver 1.1.1.1
+# LXC DNS 配置（通过 systemd-resolved 本地缓存代理）
+nameserver 127.0.0.53
+options edns0 trust-ad
 EOF
     
     # **关键修复：锁定文件前先检查是否成功写入**
@@ -709,7 +739,30 @@ EOF
     else
         print_error "DNS 配置写入失败"
     fi
-    
+
+    # 禁用 LLMNR（关闭 5355 端口）
+    print_info "禁用 LLMNR（端口 5355）..."
+    local rootfs="/var/lib/lxc/$target/rootfs"
+    local resolved_conf="$rootfs/etc/systemd/resolved.conf"
+    mkdir -p "$rootfs/etc/systemd"
+
+    if [ -f "$resolved_conf" ]; then
+        sed -i '/^\s*LLMNR\s*=/d'        "$resolved_conf"
+        sed -i '/^\s*MulticastDNS\s*=/d' "$resolved_conf"
+        grep -q '^\[Resolve\]' "$resolved_conf" || echo -e '\n[Resolve]' >> "$resolved_conf"
+        sed -i '/^\[Resolve\]/a LLMNR=no\nMulticastDNS=no' "$resolved_conf"
+    else
+        cat > "$resolved_conf" << 'RESEOF'
+[Resolve]
+LLMNR=no
+MulticastDNS=no
+RESEOF
+    fi
+
+    # 保留 systemd-resolved 运行以提供本地 DNS 缓存（仅禁用 LLMNR）
+
+    print_success "LLMNR 已禁用（端口 5355 不再监听）"
+
     echo ""
     print_success "静态 IP 配置完成"
     echo ""
@@ -718,7 +771,7 @@ EOF
     echo "  MAC 地址: $container_mac"
     echo "  静态 IP: $static_ip/24"
     echo "  网关: 10.${SUBNET_OCTET}.0.1"
-    echo "  DNS: 8.8.8.8, 8.8.4.4, 1.1.1.1"
+    echo "  DNS: 127.0.0.53 (systemd-resolved 本地缓存，上游由宿主机配置)"
     echo ""
     
     # 显示配置文件
