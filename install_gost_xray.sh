@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =====================================================
-# 基础变量
+# 固定路径常量
 # =====================================================
 GOST_DIR="/opt/gost"
 GOST_BIN="${GOST_DIR}/gost"
@@ -11,19 +11,6 @@ XRAY_BIN="${XRAY_DIR}/xray"
 
 LOG_GOST="/var/log/gost"
 LOG_XRAY="/var/log/xray"
-
-SS_METHOD="chacha20-ietf-poly1305"
-SS_PASS="pass"
-SS_PORT="8338"
-
-# mws/mwss 基础信息（gost 仅开 mws，TLS 由 OpenResty 终止）
-MWSS_USER="user"
-MWSS_PASS="pass"
-MWSS_HOST="ip_001.10w123.com"
-MWS_PATH="/mws"                   # mws 路径（与反代一致）
-
-# Xray 端口（由 OpenResty 统一反代，IPv4/IPv6 均通过 OpenResty 处理）
-XRAY_XHTTP4_PORT="8443"
 
 # OpenResty 前缀（deb 包默认）
 OR_PREFIX="/usr/local/openresty"
@@ -35,11 +22,94 @@ SYSCTL_CONF="/etc/sysctl.d/99-lxc-host-network.conf"
 SYSCTL_BACKUP="/etc/sysctl.d/99-lxc-host-network.conf.bak"
 GAI_CONF="/etc/gai.conf"
 
+# 配置文件路径
+CONF_FILE="/etc/gost-xray/settings.env"
+
+# =====================================================
+# 加载持久化配置（不存在则空）
+# =====================================================
+[[ -f "$CONF_FILE" ]] && source "$CONF_FILE"
+
+# 应用默认值（配置文件中未设置的项）
+SS_METHOD="${SS_METHOD:-chacha20-ietf-poly1305}"
+SS_PASS="${SS_PASS:-changeme_ss_pass}"
+SS_PORT="${SS_PORT:-8338}"
+MWSS_USER="${MWSS_USER:-proxyuser}"
+MWSS_PASS="${MWSS_PASS:-changeme_mws_pass}"
+MWSS_HOST="${MWSS_HOST:-your.domain.com}"
+MWS_PATH="${MWS_PATH:-/mws}"
+XRAY_XHTTP4_PORT="${XRAY_XHTTP4_PORT:-8443}"
+
 # =====================================================
 # 基础函数
 # =====================================================
 [[ $EUID -eq 0 ]] || { echo " 请使用 root 运行"; exit 1; }
 pause() { read -rp "按 Enter 继续..."; }
+
+# =====================================================
+# 交互式配置并保存
+# =====================================================
+configure_settings() {
+  clear
+  echo "========================================"
+  echo "   当前配置"
+  echo "========================================"
+  echo ""
+  echo "  MWSS_HOST        : ${MWSS_HOST}"
+  echo "  MWS_PATH         : ${MWS_PATH}"
+  echo "  MWSS_USER        : ${MWSS_USER}"
+  echo "  MWSS_PASS        : ${MWSS_PASS}"
+  echo "  SS_PASS          : ${SS_PASS}"
+  echo "  SS_PORT          : ${SS_PORT}"
+  echo "  XRAY_XHTTP4_PORT : ${XRAY_XHTTP4_PORT}"
+  echo ""
+  # 有配置文件则询问是否修改；首次运行直接进入填写
+  if [[ -f "$CONF_FILE" ]]; then
+    read -rp "是否修改配置？[y/N]: " _chg
+    [[ "$_chg" =~ ^[Yy]$ ]] || { echo "未修改。"; return; }
+  fi
+
+  echo ""
+  echo "（直接回车保持当前值）"
+  echo ""
+
+  local _v
+  read -rp "MWSS_HOST  域名        [${MWSS_HOST}]: "        _v; [[ -n "$_v" ]] && MWSS_HOST="$_v"
+  read -rp "MWS_PATH   路径        [${MWS_PATH}]: "        _v; [[ -n "$_v" ]] && MWS_PATH="$_v"
+  read -rp "MWSS_USER  mws 用户名  [${MWSS_USER}]: "       _v; [[ -n "$_v" ]] && MWSS_USER="$_v"
+  read -rp "MWSS_PASS  mws 密码    [${MWSS_PASS}]: "       _v; [[ -n "$_v" ]] && MWSS_PASS="$_v"
+  read -rp "SS_PASS    SS 密码     [${SS_PASS}]: "          _v; [[ -n "$_v" ]] && SS_PASS="$_v"
+  read -rp "SS_PORT    SS 端口     [${SS_PORT}]: "          _v; [[ -n "$_v" ]] && SS_PORT="$_v"
+  read -rp "XRAY_PORT  Xray 内端口 [${XRAY_XHTTP4_PORT}]: " _v; [[ -n "$_v" ]] && XRAY_XHTTP4_PORT="$_v"
+
+  # 保存到配置文件
+  mkdir -p "$(dirname "$CONF_FILE")"
+  cat > "$CONF_FILE" << ENVEOF
+# 由 install_gost_xray.sh 自动生成，请勿手动删除
+SS_METHOD="${SS_METHOD}"
+SS_PASS="${SS_PASS}"
+SS_PORT="${SS_PORT}"
+MWSS_USER="${MWSS_USER}"
+MWSS_PASS="${MWSS_PASS}"
+MWSS_HOST="${MWSS_HOST}"
+MWS_PATH="${MWS_PATH}"
+XRAY_XHTTP4_PORT="${XRAY_XHTTP4_PORT}"
+ENVEOF
+  chmod 600 "$CONF_FILE"
+
+  echo ""
+  echo "✔ 已保存到 ${CONF_FILE}"
+  echo ""
+  echo "  MWSS_HOST        : ${MWSS_HOST}"
+  echo "  MWS_PATH         : ${MWS_PATH}"
+  echo "  MWSS_USER        : ${MWSS_USER}"
+  echo "  MWSS_PASS        : ${MWSS_PASS}"
+  echo "  SS_PASS          : ${SS_PASS}"
+  echo "  SS_PORT          : ${SS_PORT}"
+  echo "  XRAY_XHTTP4_PORT : ${XRAY_XHTTP4_PORT}"
+  pause
+}
+
 
 get_public_ip() {
   curl -4 -fsSL https://api.ipify.org || echo "YOUR_SERVER_IP"
@@ -482,7 +552,6 @@ EOF
 - IPv4 节点 : https://${MWSS_HOST}:443
   说明：OpenResty 443 → 127.0.0.1:${XRAY_XHTTP4_PORT}（Xray 无 TLS xhttp）
   示例：vless://${UUID}@${MWSS_HOST}:443?encryption=none&security=tls&type=xhttp&host=${MWSS_HOST}&sni=${MWSS_HOST}&allowInsecure=0
-EOM
 ========================================
 EOM
 }
@@ -622,26 +691,35 @@ show_connections() {
   pause
 }
 
+# 首次运行未找到配置文件时自动进入配置向导
+if [[ ! -f "$CONF_FILE" ]]; then
+  echo ""
+  echo "未检测到配置文件 ${CONF_FILE}，请先完成初始配置。"
+  configure_settings
+fi
+
 while true; do
   clear
   echo "========== 管理菜单 =========="
   echo "1) 母鸡网络优化"
   echo "2) 查看系统状态"
-  echo "3) 安装 Gost（mws + ss）"
-  echo "4) 部署 OpenResty 反代（自签证书）"
-  echo "5) 安装 Xray (VLESS-xhttp 双路)"
-  echo "6) Supervisor 状态"
-  echo "7) 生成客户端连接 / 优选 IP"
+  echo "3) 修改配置"
+  echo "4) 安装 Gost（mws + ss）"
+  echo "5) 部署 OpenResty 反代（自签证书）"
+  echo "6) 安装 Xray (VLESS-xhttp)"
+  echo "7) Supervisor 状态"
+  echo "8) 生成客户端连接 / 优选 IP"
   echo "0) 退出"
   read -rp "选择: " c
   case "$c" in
     1) kernel_menu ;;
     2) show_status ;;
-    3) install_gost; pause ;;
-    4) install_openresty_proxy; pause ;;
-    5) install_xray; pause ;;
-    6) supervisorctl status; pause ;;
-    7) show_connections ;;
+    3) configure_settings ;;
+    4) install_gost; pause ;;
+    5) install_openresty_proxy; pause ;;
+    6) install_xray; pause ;;
+    7) supervisorctl status; pause ;;
+    8) show_connections ;;
     0) exit 0 ;;
   esac
 done
